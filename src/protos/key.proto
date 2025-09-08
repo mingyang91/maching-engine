@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package matching_engine.protos;
+
+message Key {
+    uint32 prefix = 1;
+    float price = 2;
+    uint64 timestamp = 3;
+    uint32 sequence = 4;
+}

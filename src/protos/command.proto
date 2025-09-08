@@ -1,0 +1,28 @@
+syntax = "proto3";
+import "order.proto";
+import "key.proto";
+import "google/protobuf/timestamp.proto";
+
+package matching_engine.protos;
+
+message Log {
+    uint64 sequence = 1;
+    oneof kind {
+        AddOrder add_order = 2;
+        CancelOrder cancel_order = 3;
+        OrderExecution order_execution = 4;
+    }
+
+    message AddOrder {
+        Order order = 1;
+    }
+
+    message CancelOrder {
+        Key key = 1;
+    }
+
+    message OrderExecution {
+        Execution execution = 1;
+    }
+}
+

@@ -1,0 +1,38 @@
+syntax = "proto3";
+import "key.proto";
+
+package matching_engine.protos;
+
+message Order {
+    Key key = 1;
+    Side side = 2;
+    OrderType order_type = 3;
+    uint64 quantity = 4;
+    uint64 remaining = 5;
+    OrderStatus status = 6;
+}
+
+enum Side {
+    BUY = 0;
+    SELL = 1;
+}
+
+enum OrderType {
+    LIMIT = 0;
+    MARKET = 1;
+    STOP = 2;
+    STOP_LIMIT = 3;
+}
+
+enum OrderStatus {
+    OPEN = 0;
+    PARTIALLY_FILLED = 1;
+    FILLED = 2;
+    CANCELLED = 3;
+}
+
+message Execution {
+    Order buyer = 1;
+    Order seller = 2;
+    uint64 quantity = 3;
+}
