@@ -171,7 +171,15 @@ where
             .iterator_cf(&self.cf(cf), IteratorMode::Start)
             .map(|result| {
                 let (key, value) = result?;
-                let key = K::decode(&key[..]).map_err(Self::Error::DecodeKeyError)?;
+                let key = K::decode(&key[..])
+                    .inspect_err(|_| {
+                        println!(
+                            "failed to decode key: {:?}, utf8: {:?}",
+                            key,
+                            String::from_utf8_lossy(&key[..])
+                        );
+                    })
+                    .map_err(Self::Error::DecodeKeyError)?;
                 let value = V::decode(&value[..]).map_err(Self::Error::DecodeValueError)?;
                 Ok((key, value))
             });

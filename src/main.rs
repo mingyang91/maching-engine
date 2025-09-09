@@ -30,6 +30,7 @@ mod tests {
         time::{Duration, SystemTime},
     };
 
+    use prost::Message;
     use tokio::{
         spawn,
         sync::mpsc::{Sender, channel},
@@ -187,8 +188,27 @@ mod tests {
 
     #[test]
     fn test_load_order_book() {
-        let server = Server::new();
-        println!("order book: {:?}", server.order_book.buys.len());
-        println!("order book: {:?}", server.order_book.sells.len());
+        // ACTUALLY clean the test database before running
+        let test_path = "data/test_order_book";
+        if std::path::Path::new(test_path).exists() {
+            std::fs::remove_dir_all(test_path).expect("failed to clean test db");
+        }
+
+        // Use isolated test database
+        let database = Database::new(test_path).expect("failed to create database");
+        let order_book = OrderBook::create(database).expect("failed to create order book");
+
+        println!("order book: {:?}", order_book.buys.len());
+        println!("order book: {:?}", order_book.sells.len());
+
+        // Clean up after test
+        std::fs::remove_dir_all(test_path).expect("failed to clean test db");
+    }
+
+    #[quickcheck]
+    fn enc_dec_key(key: Key) {
+        let encoded = key.encode_to_vec();
+        let decoded = Key::decode(&encoded[..]).expect("failed to decode key");
+        assert_eq!(key, decoded);
     }
 }
