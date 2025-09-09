@@ -122,15 +122,24 @@ where
         let last_sequence = self.inner.persister.last_sequence()?;
         let wal_last_sequence = self.inner.wal.last_sequence();
         if last_sequence == wal_last_sequence {
+            println!("no logs to sync");
             return Ok(0);
         }
+        println!(
+            "syncing logs from {} to {}",
+            last_sequence, wal_last_sequence
+        );
         let logs = self
             .inner
             .wal
             .fetch_logs_by_sequence(last_sequence, 1024)
             .map_err(OrderBookError::PersisterError)?;
         let len = logs.len();
+        if len == 0 {
+            return Ok(0);
+        }
         self.save(logs)?;
+        println!("synced {} logs", len);
         Ok(len)
     }
 

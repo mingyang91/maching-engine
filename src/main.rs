@@ -249,7 +249,7 @@ mod tests {
         println!("order book: {:?}", server.order_book.sells.len());
         println!(
             "last sequence: {:?}",
-            server.wal.fetch_logs_by_sequence(13000, 1024)
+            server.wal.fetch_logs_by_sequence(20000, 1024)
         );
     }
 }

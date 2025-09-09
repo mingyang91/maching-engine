@@ -137,6 +137,9 @@ where
                         match persist_rx.try_recv() {
                             Ok(log) => {
                                 logs.push(log);
+                                if logs.len() == 128 {
+                                    break;
+                                }
                             }
                             Err(TryRecvError::Empty) => break,
                             Err(TryRecvError::Disconnected) => break 'main_loop,

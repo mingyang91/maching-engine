@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use prost::Message;
-use rocksdb::{DB, IteratorMode, ReadOptions, WriteBatch};
+use rocksdb::{DB, IteratorMode, ReadOptions, WriteBatch, WriteOptions};
 
 const META_PREFIX: &str = "__meta_";
 const LAST_SEQUENCE_KEY: &str = "__meta_last_sequence";
@@ -95,7 +95,10 @@ where
             write_batch.delete(key.encode_to_vec());
         }
         write_batch.put(LAST_SEQUENCE_KEY.as_bytes(), &sequence.encode_to_vec());
-        self.write(write_batch)?;
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(true);
+        self.write_opt(write_batch, &write_options)?;
+        println!("last sequence: {}", sequence);
         Ok(())
     }
 
