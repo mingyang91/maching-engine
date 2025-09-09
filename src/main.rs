@@ -31,7 +31,7 @@ mod tests {
     use std::{
         sync::OnceLock,
         thread,
-        time::{Duration, Instant, SystemTime},
+        time::{Instant, SystemTime},
     };
 
     use prost::Message;
@@ -139,11 +139,7 @@ mod tests {
                         println!("server started");
                         while let Some(order) = receiver.recv().await {
                             let fut = server.order_book.add_order(order);
-                            spawn(async move {
-                                if let Err(e) = fut.await {
-                                    tracing::error!("failed to add order: {:?}", e);
-                                }
-                            });
+                            spawn(fut);
                         }
                         println!("server stopped");
                     })

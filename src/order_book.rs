@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error};
+use std::{collections::BTreeMap, error::Error, time::Instant};
 
 use tokio::task::yield_now;
 
@@ -55,7 +55,6 @@ where
 
         let persister = self.persister.clone();
         async move {
-            yield_now().await;
             persister
                 .save(updates, deletes)
                 .await
@@ -82,7 +81,6 @@ where
 
         let persister = self.persister.clone();
         async move {
-            yield_now().await;
             let Some(mut order) = removed else {
                 return Ok(());
             };
@@ -152,17 +150,21 @@ where
     }
 
     fn load(&mut self) -> Result<(), P::Error> {
+        let now = Instant::now();
         let buys = self.persister.load_all_iter(BUYS_CF)?;
         for result in buys {
             let (key, order) = result?;
             self.buys.insert(key.into(), order);
         }
+        println!("load {} buys in {:?}", self.buys.len(), now.elapsed());
 
+        let now = Instant::now();
         let sells = self.persister.load_all_iter(SELLS_CF)?;
         for result in sells {
             let (key, order) = result?;
             self.sells.insert(key.into(), order);
         }
+        println!("load {} sells in {:?}", self.sells.len(), now.elapsed());
         Ok(())
     }
 
