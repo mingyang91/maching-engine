@@ -5,7 +5,7 @@ mod protos;
 use crate::{
     order_book::OrderBook,
     persister::Database,
-    protos::{Key, Order},
+    protos::{FixedKey, Order},
 };
 
 #[tokio::main]
@@ -14,7 +14,7 @@ async fn main() {
 }
 
 struct Server {
-    order_book: OrderBook<Database<Key, Order>>,
+    order_book: OrderBook<Database<FixedKey, Order>>,
 }
 
 impl Server {

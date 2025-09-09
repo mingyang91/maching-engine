@@ -4,17 +4,18 @@ use tokio::task::yield_now;
 
 use crate::{
     persister::AsyncPersister,
-    protos::{Key, Order, OrderStatus, Side},
+    protos::{FixedKey, Order, OrderStatus, Side},
 };
 
-pub const ORDER_BOOK_CF: &str = "order_book";
+pub const BUYS_CF: &str = "buys";
+pub const SELLS_CF: &str = "sells";
 pub const ALL_ORDERS_CF: &str = "all_orders";
 
 pub struct OrderBook<P> {
     pub last_sequence: u64,
     pub last_price: f32,
-    pub buys: BTreeMap<Key, Order>,
-    pub sells: BTreeMap<Key, Order>,
+    pub buys: BTreeMap<FixedKey, Order>,
+    pub sells: BTreeMap<FixedKey, Order>,
     pub persister: P,
 }
 
@@ -30,21 +31,25 @@ pub enum OrderBookError<T: Error> {
 
 impl<P> OrderBook<P>
 where
-    P: AsyncPersister<Key, Order> + Clone,
+    P: AsyncPersister<FixedKey, Order> + Clone,
     P: 'static + Send + Sync,
 {
     pub fn add_order(
         &mut self,
         order: Order,
     ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static {
+        let mut updates = vec![];
         let key = order.key.expect("key should be present");
         if order.side() == Side::Buy {
-            self.buys.insert(key, order);
+            self.buys.insert(key.into(), order);
+            updates.push((BUYS_CF, key.into(), order));
+            updates.push((ALL_ORDERS_CF, key.into(), order));
         } else {
-            self.sells.insert(key, order);
+            self.sells.insert(key.into(), order);
+            updates.push((SELLS_CF, key.into(), order));
+            updates.push((ALL_ORDERS_CF, key.into(), order));
         }
 
-        let mut updates = vec![(ORDER_BOOK_CF, key, order)];
         let (updates2, deletes) = self.run_matching();
         updates.extend(updates2);
 
@@ -66,7 +71,7 @@ where
 
     pub fn cancel_order(
         &mut self,
-        key: Key,
+        key: FixedKey,
         side: Side,
     ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static {
         let removed = if side == Side::Buy {
@@ -83,7 +88,8 @@ where
             };
             order.set_status(OrderStatus::Cancelled);
             let updates = vec![(ALL_ORDERS_CF, key, order)];
-            let deletes = vec![(ORDER_BOOK_CF, key)];
+            let cf = if side == Side::Buy { BUYS_CF } else { SELLS_CF };
+            let deletes = vec![(cf, key)];
 
             persister
                 .save(updates, deletes)
@@ -98,7 +104,12 @@ where
         }
     }
 
-    fn run_matching(&mut self) -> (Vec<(&'static str, Key, Order)>, Vec<(&'static str, Key)>) {
+    fn run_matching(
+        &mut self,
+    ) -> (
+        Vec<(&'static str, FixedKey, Order)>,
+        Vec<(&'static str, FixedKey)>,
+    ) {
         let mut updates = vec![];
         let mut deletes = vec![];
         loop {
@@ -121,7 +132,7 @@ where
 
             if buy.remaining == 0 {
                 buy.set_status(OrderStatus::Filled);
-                deletes.push((ORDER_BOOK_CF, buy_key));
+                deletes.push((BUYS_CF, buy_key));
             } else {
                 self.buys.insert(buy_key, buy);
             }
@@ -129,7 +140,7 @@ where
 
             if sell.remaining == 0 {
                 sell.set_status(OrderStatus::Filled);
-                deletes.push((ORDER_BOOK_CF, sell_key));
+                deletes.push((SELLS_CF, sell_key));
             } else {
                 self.sells.insert(sell_key, sell);
             }
@@ -141,14 +152,16 @@ where
     }
 
     fn load(&mut self) -> Result<(), P::Error> {
-        let orders = self.persister.load_all_iter(ORDER_BOOK_CF)?;
-        for result in orders {
+        let buys = self.persister.load_all_iter(BUYS_CF)?;
+        for result in buys {
             let (key, order) = result?;
-            if order.side() == Side::Buy {
-                self.buys.insert(key, order);
-            } else {
-                self.sells.insert(key, order);
-            }
+            self.buys.insert(key.into(), order);
+        }
+
+        let sells = self.persister.load_all_iter(SELLS_CF)?;
+        for result in sells {
+            let (key, order) = result?;
+            self.sells.insert(key.into(), order);
         }
         Ok(())
     }
@@ -165,7 +178,7 @@ where
         Ok(order_book)
     }
 
-    pub async fn get_order(&self, key: Key) -> Result<Option<Order>, P::Error> {
+    pub async fn get_order(&self, key: FixedKey) -> Result<Option<Order>, P::Error> {
         self.persister.load(ALL_ORDERS_CF, key).await
     }
 }
