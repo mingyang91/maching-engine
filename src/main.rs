@@ -28,48 +28,18 @@ impl Server {
     }
 }
 
-fn next_sequence() -> u32 {
-    static SEQUENCE: AtomicU32 = AtomicU32::new(0);
-    SEQUENCE.fetch_add(1, Ordering::Relaxed)
-}
-
-fn new_order(
-    price: f32,
-    quantity: u64,
-    side: Side,
-    order_type: OrderType,
-    status: OrderStatus,
-    remaining: u64,
-    timestamp: u64,
-    sequence: u32,
-) -> Order {
-    Order {
-        key: Some(Key {
-            prefix: u32::from_le_bytes([0u8, 0u8, 0u8, 'o' as u8]),
-            price,
-            timestamp,
-            sequence,
-        }),
-        side: side.into(),
-        order_type: order_type.into(),
-        quantity,
-        remaining,
-        status: status.into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use core::f32;
     use std::{
         sync::OnceLock,
         thread,
-        time::{Duration, Instant, SystemTime},
+        time::{Duration, SystemTime},
     };
 
     use tokio::{
         spawn,
-        sync::mpsc::{Receiver, Sender, channel},
+        sync::mpsc::{Sender, channel},
     };
 
     use super::*;

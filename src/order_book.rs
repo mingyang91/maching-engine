@@ -141,7 +141,7 @@ where
     }
 
     fn load(&mut self) -> Result<(), P::Error> {
-        let orders = self.persister.load_prefix_iter(ORDER_BOOK_CF, b"")?;
+        let orders = self.persister.load_all_iter(ORDER_BOOK_CF)?;
         for result in orders {
             let (key, order) = result?;
             if order.side() == Side::Buy {
@@ -166,6 +166,6 @@ where
     }
 
     pub async fn get_order(&self, key: Key) -> Result<Option<Order>, P::Error> {
-        self.persister.load(ORDER_BOOK_CF, key).await
+        self.persister.load(ALL_ORDERS_CF, key).await
     }
 }

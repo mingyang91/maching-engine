@@ -49,6 +49,11 @@ where
     where
         K: 'a,
         V: 'a;
+
+    fn load_all_iter<'a>(&'a self, cf: &'static str) -> Result<Self::Iter<'a>, Self::Error>
+    where
+        K: 'a,
+        V: 'a;
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -66,22 +71,12 @@ pub enum PersisterError<T: Error> {
 const META_CF: &str = "meta";
 const LAST_SEQUENCE_KEY: &str = "last_sequence";
 
-const ORDER_BOOK_CF: &str = "order_book";
-
 trait ColumnFamily {
     fn cf(&self, name: &'static str) -> ColumnFamilyRef;
 }
 
 impl ColumnFamily for DB {
     fn cf(&self, name: &'static str) -> ColumnFamilyRef {
-        if let Some(cf) = self.cf_handle(name) {
-            return cf;
-        };
-        let mut opts = Options::default();
-        opts.create_missing_column_families(true);
-        if let Err(e) = self.create_cf(name, &opts) {
-            tracing::error!("failed to create cf: {:?}", e);
-        };
         self.cf_handle(name).expect("failed to get cf handle")
     }
 }
@@ -167,6 +162,22 @@ where
         Ok(Box::new(iter))
     }
 
+    fn load_all_iter<'a>(&'a self, cf: &'static str) -> Result<Self::Iter<'a>, Self::Error>
+    where
+        K: 'a,
+        V: 'a,
+    {
+        let iter = self
+            .iterator_cf(&self.cf(cf), IteratorMode::Start)
+            .map(|result| {
+                let (key, value) = result?;
+                let key = K::decode(&key[..]).map_err(Self::Error::DecodeKeyError)?;
+                let value = V::decode(&value[..]).map_err(Self::Error::DecodeValueError)?;
+                Ok((key, value))
+            });
+        Ok(Box::new(iter))
+    }
+
     fn save(
         &self,
         updates: Vec<(&'static str, K, V)>,
@@ -212,6 +223,11 @@ where
     where
         K: 'a,
         V: 'a;
+
+    fn load_all_iter<'a>(&'a self, cf: &'static str) -> Result<Self::Iter<'a>, Self::Error>
+    where
+        K: 'a,
+        V: 'a;
 }
 
 enum Command<K, V, E> {
@@ -230,6 +246,22 @@ struct Inner {
     db: DB,
     tx: mpsc::Sender<Command<Vec<u8>, Vec<u8>, PersisterError<rocksdb::Error>>>,
     handle: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        while let Err(e) = self.tx.try_send(Command::Close) {
+            tracing::warn!("failed to send command: {:?}", e);
+        }
+
+        self.handle
+            .lock()
+            .expect("failed to lock handle")
+            .take()
+            .expect("handle should be present")
+            .join()
+            .expect("failed to join handle");
+    }
 }
 
 #[derive(Clone)]
@@ -304,6 +336,14 @@ where
     {
         self.inner.db.load_prefix_iter(cf, prefix)
     }
+
+    fn load_all_iter<'a>(&'a self, cf: &'static str) -> Result<Self::Iter<'a>, Self::Error>
+    where
+        K: 'a,
+        V: 'a,
+    {
+        self.inner.db.load_all_iter(cf)
+    }
 }
 
 impl Database {
@@ -311,7 +351,19 @@ impl Database {
         let mut options = Options::default();
         options.create_if_missing(true);
         options.create_missing_column_families(true);
-        let db = DB::open(&options, path).expect("failed to open db");
+
+        // Open with ALL column families - don't be an amateur
+        let cfs = vec!["default", "order_book", "all_orders", "meta"];
+        let db = match DB::list_cf(&options, path) {
+            Ok(existing_cfs) => {
+                // Database exists, open with existing column families
+                DB::open_cf(&options, path, existing_cfs).expect("failed to open db with cfs")
+            }
+            Err(_) => {
+                // Fresh database, create with our column families
+                DB::open_cf(&options, path, &cfs).expect("failed to create db with cfs")
+            }
+        };
         let (tx, mut rx) = mpsc::channel(u16::MAX as usize);
 
         let placeholder = Mutex::new(None);
@@ -345,23 +397,6 @@ impl Database {
         *inner.handle.lock().expect("failed to lock handle") = Some(handle);
 
         Ok(Self { inner })
-    }
-}
-
-impl Drop for Database {
-    fn drop(&mut self) {
-        self.inner
-            .tx
-            .blocking_send(Command::Close)
-            .expect("failed to send command");
-        self.inner
-            .handle
-            .lock()
-            .expect("failed to lock handle")
-            .take()
-            .expect("handle should be present")
-            .join()
-            .expect("failed to join handle");
     }
 }
 
