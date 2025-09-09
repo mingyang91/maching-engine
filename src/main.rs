@@ -1,15 +1,8 @@
 mod order_book;
-// mod order_book_persister;
 mod persister;
 mod protos;
 
-use std::sync::atomic::{AtomicU32, Ordering};
-
-use crate::{
-    order_book::OrderBook,
-    persister::Database,
-    protos::{Key, Order, OrderStatus, OrderType, Side},
-};
+use crate::{order_book::OrderBook, persister::Database};
 
 #[tokio::main]
 async fn main() {
@@ -41,6 +34,8 @@ mod tests {
         spawn,
         sync::mpsc::{Sender, channel},
     };
+
+    use crate::protos::{Key, Order, OrderStatus, OrderType, Side};
 
     use super::*;
     use quickcheck::{Arbitrary, Gen};
@@ -102,7 +97,6 @@ mod tests {
     impl Arbitrary for Key {
         fn arbitrary(g: &mut Gen) -> Self {
             Key {
-                prefix: u32::from_le_bytes([0u8, 0u8, 0u8, 'o' as u8]),
                 price: gaussian(g, 100.0, 100.0),
                 timestamp: SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
