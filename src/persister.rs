@@ -21,7 +21,9 @@ where
         K: 'a,
         V: 'a;
 
+    #[allow(dead_code)]
     fn last_sequence(&self) -> Result<u64, Self::Error>;
+    #[allow(dead_code)]
     fn put_last_sequence(&self, sequence: u64) -> Result<(), Self::Error>;
 
     fn save(
@@ -41,6 +43,7 @@ where
         K: 'a,
         V: 'a;
 
+    #[allow(dead_code)]
     fn load_range_iter<'a>(
         &'a self,
         cf: &'static str,
@@ -60,13 +63,13 @@ where
 #[derive(thiserror::Error, Debug)]
 pub enum PersisterError<T: Error> {
     #[error("db error")]
-    DBError(#[from] T),
+    DB(#[from] T),
     #[error("failed to decode key")]
-    DecodeKeyError(Box<dyn Error + Send + Sync + 'static>),
+    DecodeKey(Box<dyn Error + Send + Sync + 'static>),
     #[error("failed to decode value")]
-    DecodeValueError(Box<dyn Error + Send + Sync + 'static>),
+    DecodeValue(Box<dyn Error + Send + Sync + 'static>),
     #[error("failed to decode sequence")]
-    DecodeSequenceError(prost::DecodeError),
+    DecodeSequence(prost::DecodeError),
 }
 
 const META_CF: &str = "meta";
@@ -81,7 +84,7 @@ impl ColumnFamily for DB {
         if let Some(cf) = self.cf_handle(name) {
             cf
         } else {
-            panic!("failed to get cf handle: {}", name);
+            panic!("failed to get cf handle: {name}");
         }
     }
 }
@@ -104,7 +107,7 @@ where
         let Some(value) = self.get_cf(&self.cf(META_CF), LAST_SEQUENCE_KEY)? else {
             return Ok(0);
         };
-        u64::try_from_bytes(&value[..]).map_err(PersisterError::DecodeSequenceError)
+        u64::try_from_bytes(&value[..]).map_err(PersisterError::DecodeSequence)
     }
 
     fn put_last_sequence(&self, sequence: u64) -> Result<(), Self::Error> {
@@ -117,8 +120,8 @@ where
             return Ok(None);
         };
 
-        let value = V::try_from_bytes(&value[..])
-            .map_err(|e| Self::Error::DecodeValueError(Box::new(e)))?;
+        let value =
+            V::try_from_bytes(&value[..]).map_err(|e| Self::Error::DecodeValue(Box::new(e)))?;
         Ok(Some(value))
     }
 
@@ -133,10 +136,10 @@ where
     {
         let iter = self.prefix_iterator_cf(&self.cf(cf), prefix).map(|result| {
             let (key, value) = result?;
-            let key = K::try_from_bytes(&key[..])
-                .map_err(|e| Self::Error::DecodeKeyError(Box::new(e)))?;
-            let value = V::try_from_bytes(&value[..])
-                .map_err(|e| Self::Error::DecodeValueError(Box::new(e)))?;
+            let key =
+                K::try_from_bytes(&key[..]).map_err(|e| Self::Error::DecodeKey(Box::new(e)))?;
+            let value =
+                V::try_from_bytes(&value[..]).map_err(|e| Self::Error::DecodeValue(Box::new(e)))?;
             Ok((key, value))
         });
         Ok(Box::new(iter))
@@ -159,10 +162,10 @@ where
             .iterator_cf_opt(&self.cf(cf), readopts, IteratorMode::Start)
             .map(|result| {
                 let (key, value) = result?;
-                let key = K::try_from_bytes(&key[..])
-                    .map_err(|e| Self::Error::DecodeKeyError(Box::new(e)))?;
+                let key =
+                    K::try_from_bytes(&key[..]).map_err(|e| Self::Error::DecodeKey(Box::new(e)))?;
                 let value = V::try_from_bytes(&value[..])
-                    .map_err(|e| Self::Error::DecodeValueError(Box::new(e)))?;
+                    .map_err(|e| Self::Error::DecodeValue(Box::new(e)))?;
                 Ok((key, value))
             });
         Ok(Box::new(iter))
@@ -177,43 +180,13 @@ where
             .full_iterator_cf(&self.cf(cf), IteratorMode::Start)
             .map(|result| {
                 let (key, value) = result?;
-                let key = K::try_from_bytes(&key[..])
-                    .inspect_err(|_| {
-                        println!(
-                            "failed to decode key: {:?}, hex: {:?}",
-                            key,
-                            hex::encode(&key[..])
-                        );
-                    })
-                    .map_err(|e| Self::Error::DecodeKeyError(Box::new(e)))?;
+                let key =
+                    K::try_from_bytes(&key[..]).map_err(|e| Self::Error::DecodeKey(Box::new(e)))?;
                 let value = V::try_from_bytes(&value[..])
-                    .map_err(|e| Self::Error::DecodeValueError(Box::new(e)))?;
+                    .map_err(|e| Self::Error::DecodeValue(Box::new(e)))?;
                 Ok((key, value))
             });
-        // .filter_map(|result| {
-        //     let (key, value) = result.ok()?;
-        //     let key = K::decode(&key[..])
-        //         .inspect_err(|_| {
-        //             println!(
-        //                 "failed to decode key: {:?}, hex: {:?}",
-        //                 key,
-        //                 hex::encode(&key[..])
-        //             );
-        //         })
-        //         .map_err(Self::Error::DecodeKeyError)
-        //         .ok()?;
-        //     let value = V::decode(&value[..])
-        //         .inspect_err(|_| {
-        //             println!(
-        //                 "failed to decode value: {:?}, hex: {:?}",
-        //                 value,
-        //                 hex::encode(&value[..])
-        //             );
-        //         })
-        //         .map_err(Self::Error::DecodeValueError)
-        //         .ok()?;
-        //     Some(Ok((key, value)))
-        // });
+
         Ok(Box::new(iter))
     }
 
@@ -254,6 +227,7 @@ where
 
     async fn load(&self, cf: &'static str, key: K) -> Result<Option<V>, Self::Error>;
 
+    #[allow(dead_code)]
     fn load_prefix_iter<'a>(
         &'a self,
         cf: &'static str,
@@ -272,11 +246,13 @@ where
 enum Command<K, V, E> {
     Save {
         reply: oneshot::Sender<Result<(), E>>,
-        arg: (Vec<(&'static str, K, V)>, Vec<(&'static str, K)>),
+        updates: Vec<(&'static str, K, V)>,
+        deletes: Vec<(&'static str, K)>,
     },
     Load {
         reply: oneshot::Sender<Result<Option<V>, E>>,
-        arg: (&'static str, K),
+        cf: &'static str,
+        key: K,
     },
     Close,
 }
@@ -327,16 +303,12 @@ where
         deletes: Vec<(&'static str, K)>,
     ) -> Result<(), Self::Error> {
         let (tx, rx) = oneshot::channel();
-        let updates = updates
-            .into_iter()
-            .map(|(cf, key, value)| (cf, key, value))
-            .collect();
-        let deletes = deletes.into_iter().map(|(cf, key)| (cf, key)).collect();
         self.inner
             .tx
             .send(Command::Save {
                 reply: tx,
-                arg: (updates, deletes),
+                updates,
+                deletes,
             })
             .await
             .expect("failed to send command");
@@ -347,10 +319,7 @@ where
         let (tx, rx) = oneshot::channel();
         self.inner
             .tx
-            .send(Command::Load {
-                reply: tx,
-                arg: (cf, key),
-            })
+            .send(Command::Load { reply: tx, cf, key })
             .await
             .expect("failed to send command");
         rx.await.expect("failed to receive reply")
@@ -412,16 +381,19 @@ where
             while let Some(command) = rx.blocking_recv() {
                 match command {
                     Command::Close => break,
-                    Command::Save { reply, arg } => {
-                        let res = bind_inner.db.save(arg.0, arg.1);
+                    Command::Save {
+                        reply,
+                        updates,
+                        deletes,
+                    } => {
+                        let res = bind_inner.db.save(updates, deletes);
                         if let Err(e) = reply.send(res) {
                             tracing::warn!("failed to send reply: {:?}", e);
                         }
                     }
-                    Command::Load { reply, arg } => {
-                        let (cf, key) = arg;
+                    Command::Load { reply, cf, key } => {
                         let value = bind_inner.db.load(cf, key);
-                        if let Err(_) = reply.send(value) {
+                        if reply.send(value).is_err() {
                             tracing::warn!("failed to send reply");
                         }
                     }

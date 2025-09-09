@@ -1,7 +1,5 @@
 use std::{collections::BTreeMap, error::Error, time::Instant};
 
-use tokio::task::yield_now;
-
 use crate::{
     persister::AsyncPersister,
     protos::{FixedKey, Order, OrderStatus, Side},
@@ -12,7 +10,6 @@ pub const SELLS_CF: &str = "sells";
 pub const ALL_ORDERS_CF: &str = "all_orders";
 
 pub struct OrderBook<P> {
-    pub last_sequence: u64,
     pub last_price: f32,
     pub buys: BTreeMap<FixedKey, Order>,
     pub sells: BTreeMap<FixedKey, Order>,
@@ -22,11 +19,16 @@ pub struct OrderBook<P> {
 #[derive(thiserror::Error, Debug)]
 pub enum OrderBookError<T: Error> {
     #[error("persister error")]
-    PersisterError(#[from] T),
+    Persister(#[from] T),
     #[error("failed to add order")]
-    AddOrderError,
+    AddOrder,
     #[error("failed to cancel order")]
-    CancelOrderError,
+    CancelOrder,
+}
+
+struct MatchingResult {
+    updates: Vec<(&'static str, FixedKey, Order)>,
+    deletes: Vec<(&'static str, FixedKey)>,
 }
 
 impl<P> OrderBook<P>
@@ -34,6 +36,7 @@ where
     P: AsyncPersister<FixedKey, Order> + Clone,
     P: 'static + Send + Sync,
 {
+    #[allow(dead_code)]
     pub fn add_order(
         &mut self,
         order: Order,
@@ -50,7 +53,10 @@ where
             updates.push((ALL_ORDERS_CF, key.into(), order));
         }
 
-        let (updates2, deletes) = self.run_matching();
+        let MatchingResult {
+            updates: updates2,
+            deletes,
+        } = self.run_matching();
         updates.extend(updates2);
 
         let persister = self.persister.clone();
@@ -61,13 +67,14 @@ where
                 .inspect_err(|_| {
                     tracing::error!("failed to insert add order log");
                 })
-                .map_err(|_| OrderBookError::AddOrderError)?;
+                .map_err(|_| OrderBookError::AddOrder)?;
             tracing::info!("added order: {:?}", order);
             tracing::debug!("added order: {:?}", order);
             Ok(())
         }
     }
 
+    #[allow(dead_code)]
     pub fn cancel_order(
         &mut self,
         key: FixedKey,
@@ -95,19 +102,14 @@ where
                 .inspect_err(|_| {
                     tracing::error!("failed to insert cancel order log");
                 })
-                .map_err(|_| OrderBookError::CancelOrderError)?;
+                .map_err(|_| OrderBookError::CancelOrder)?;
             tracing::info!("cancelled order: {:?}", key);
             tracing::debug!("cancelled order: {:?}", order);
             Ok(())
         }
     }
 
-    fn run_matching(
-        &mut self,
-    ) -> (
-        Vec<(&'static str, FixedKey, Order)>,
-        Vec<(&'static str, FixedKey)>,
-    ) {
+    fn run_matching(&mut self) -> MatchingResult {
         let mut updates = vec![];
         let mut deletes = vec![];
         loop {
@@ -146,7 +148,7 @@ where
 
             self.last_price = buy_key.price;
         }
-        (updates, deletes)
+        MatchingResult { updates, deletes }
     }
 
     fn load(&mut self) -> Result<(), P::Error> {
@@ -154,7 +156,7 @@ where
         let buys = self.persister.load_all_iter(BUYS_CF)?;
         for result in buys {
             let (key, order) = result?;
-            self.buys.insert(key.into(), order);
+            self.buys.insert(key, order);
         }
         println!("load {} buys in {:?}", self.buys.len(), now.elapsed());
 
@@ -162,7 +164,7 @@ where
         let sells = self.persister.load_all_iter(SELLS_CF)?;
         for result in sells {
             let (key, order) = result?;
-            self.sells.insert(key.into(), order);
+            self.sells.insert(key, order);
         }
         println!("load {} sells in {:?}", self.sells.len(), now.elapsed());
         Ok(())
@@ -170,7 +172,6 @@ where
 
     pub fn create(persister: P) -> Result<Self, P::Error> {
         let mut order_book = Self {
-            last_sequence: 0,
             last_price: 0.0,
             buys: BTreeMap::new(),
             sells: BTreeMap::new(),
@@ -180,6 +181,7 @@ where
         Ok(order_book)
     }
 
+    #[allow(dead_code)]
     pub async fn get_order(&self, key: FixedKey) -> Result<Option<Order>, P::Error> {
         self.persister.load(ALL_ORDERS_CF, key).await
     }

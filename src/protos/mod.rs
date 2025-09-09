@@ -4,26 +4,28 @@ use prost::Message;
 
 include!(concat!(env!("OUT_DIR"), "/matching_engine.protos.rs"));
 
-// Only implement what prost doesn't generate - custom ordering
 impl Eq for Key {}
 
 impl PartialOrd for Key {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        // Simple, clear comparison logic
-        match self.price.partial_cmp(&other.price)? {
-            Ordering::Equal => match self.timestamp.cmp(&other.timestamp) {
-                Ordering::Equal => Some(self.sequence.cmp(&other.sequence)),
-                other => Some(other),
-            },
-            other => Some(other),
-        }
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for Key {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Keys with valid prices should always be comparable
-        self.partial_cmp(other).expect("keys should be comparable")
+        let price_cmp = self
+            .price
+            .partial_cmp(&other.price)
+            .expect("price should be comparable");
+        if price_cmp != Ordering::Equal {
+            return price_cmp;
+        }
+        let timestamp_cmp = self.timestamp.cmp(&other.timestamp);
+        if timestamp_cmp != Ordering::Equal {
+            return timestamp_cmp;
+        }
+        self.sequence.cmp(&other.sequence)
     }
 }
 
@@ -39,19 +41,26 @@ impl Eq for FixedKey {}
 
 impl PartialOrd for FixedKey {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match self.price.partial_cmp(&other.price)? {
-            Ordering::Equal => match self.timestamp.cmp(&other.timestamp) {
-                Ordering::Equal => Some(self.sequence.cmp(&other.sequence)),
-                other => Some(other),
-            },
-            other => Some(other),
-        }
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for FixedKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).expect("keys should be comparable")
+        let price_cmp = self
+            .price
+            .partial_cmp(&other.price)
+            .expect("price should be comparable");
+        if price_cmp != Ordering::Equal {
+            return price_cmp;
+        }
+
+        let timestamp_cmp = self.timestamp.cmp(&other.timestamp);
+        if timestamp_cmp != Ordering::Equal {
+            return timestamp_cmp;
+        }
+
+        self.sequence.cmp(&other.sequence)
     }
 }
 

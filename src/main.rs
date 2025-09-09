@@ -1,3 +1,6 @@
+#![deny(warnings)]
+#![deny(clippy::unwrap_used)]
+
 mod order_book;
 mod persister;
 mod protos;
@@ -10,10 +13,11 @@ use crate::{
 
 #[tokio::main]
 async fn main() {
-    let server = Server::new();
+    let _server = Server::new();
 }
 
 struct Server {
+    #[allow(dead_code)]
     order_book: OrderBook<Database<FixedKey, Order>>,
 }
 
@@ -67,35 +71,32 @@ mod tests {
 
     impl Arbitrary for Side {
         fn arbitrary(g: &mut Gen) -> Self {
-            g.choose(&[Side::Buy, Side::Sell])
+            *g.choose(&[Side::Buy, Side::Sell])
                 .expect("should choose side")
-                .clone()
         }
     }
 
     impl Arbitrary for OrderType {
         fn arbitrary(g: &mut Gen) -> Self {
-            g.choose(&[
+            *g.choose(&[
                 OrderType::Limit,
                 OrderType::Market,
                 OrderType::Stop,
                 OrderType::StopLimit,
             ])
             .expect("should choose order type")
-            .clone()
         }
     }
 
     impl Arbitrary for OrderStatus {
         fn arbitrary(g: &mut Gen) -> Self {
-            g.choose(&[
+            *g.choose(&[
                 OrderStatus::Open,
                 OrderStatus::PartiallyFilled,
                 OrderStatus::Filled,
                 OrderStatus::Cancelled,
             ])
             .expect("should choose order status")
-            .clone()
         }
     }
 
@@ -119,7 +120,7 @@ mod tests {
                 key: Some(Key::arbitrary(g)),
                 side: Side::arbitrary(g).into(),
                 order_type: OrderType::arbitrary(g).into(),
-                quantity: quantity,
+                quantity,
                 remaining: quantity,
                 status: OrderStatus::Open.into(),
             }
@@ -151,7 +152,7 @@ mod tests {
 
     #[quickcheck]
     fn test_new_order(order: Order) {
-        println!("sending order: {:?}", order);
+        println!("sending order: {order:?}");
         let sender = serve();
         if let Err(e) = sender.blocking_send(order) {
             tracing::error!("failed to send order: {:?}", e);
@@ -162,7 +163,7 @@ mod tests {
     fn test_new_orders(orders: Vec<Order>) {
         let sender = serve();
         for order in orders {
-            println!("sending order: {:?}", order);
+            println!("sending order: {order:?}");
             if let Err(e) = sender.blocking_send(order) {
                 tracing::error!("failed to send order: {:?}", e);
             }
@@ -191,9 +192,9 @@ mod tests {
     fn add_order(order: Order) {
         let sender = serve();
         if let Err(e) = sender.blocking_send(order) {
-            println!("failed to send order: {:?}", e);
+            println!("failed to send order: {e:?}");
         }
-        println!("added order: {:?}", order);
+        println!("added order: {order:?}");
     }
 
     #[test]
