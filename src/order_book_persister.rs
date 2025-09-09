@@ -11,9 +11,8 @@ use std::{
 use rocksdb::{DB, Options};
 
 use crate::{
-    logs::WAL,
     order_book::OrderBook,
-    persister::{MetadataStore, Persister, PersisterError},
+    persister::{Persister, PersisterError},
     protos::{Key, Log, Order, Side, log},
 };
 
@@ -23,34 +22,24 @@ pub enum OrderBookError<T: Error> {
     PersisterError(#[from] T),
 }
 
-struct OrderBookPersisterInner<P, W> {
+struct OrderBookPersisterInner<P> {
     persister: P,
-    wal: W,
     alive: AtomicBool,
 }
 
-pub struct OrderBookPersister<OP, LP, E>
+// #[derive(Clone)]
+pub struct OrderBookPersister<P>
 where
-    OP: Persister<Key, Order, Error = E>,
-    OP: MetadataStore<Error = E>,
-    OP: 'static + Send + Sync,
-    LP: Persister<u64, Log, Error = E>,
-    LP: MetadataStore<Error = E>,
-    LP: 'static + Send + Sync,
-    E: Error + 'static,
+    P: Persister<Key, Order>,
+    P: 'static + Send + Sync,
 {
-    inner: Arc<OrderBookPersisterInner<OP, WAL<LP, E>>>,
+    inner: Arc<OrderBookPersisterInner<P>>,
 }
 
-impl<OP, LP, E> Clone for OrderBookPersister<OP, LP, E>
+impl<P> Clone for OrderBookPersister<P>
 where
-    OP: Persister<Key, Order, Error = E>,
-    OP: MetadataStore<Error = E>,
-    OP: 'static + Send + Sync,
-    LP: Persister<u64, Log, Error = E>,
-    LP: MetadataStore<Error = E>,
-    LP: 'static + Send + Sync,
-    E: Error + 'static,
+    P: Persister<Key, Order>,
+    P: 'static + Send + Sync,
 {
     fn clone(&self) -> Self {
         Self {
@@ -59,20 +48,14 @@ where
     }
 }
 
-impl<OP, LP, E: Error> OrderBookPersister<OP, LP, E>
+impl<P> OrderBookPersister<P>
 where
-    OP: Persister<Key, Order, Error = E>,
-    OP: MetadataStore<Error = E>,
-    OP: 'static + Send + Sync,
-    LP: Persister<u64, Log, Error = E>,
-    LP: MetadataStore<Error = E>,
-    LP: 'static + Send + Sync,
-    E: Error + 'static,
+    P: Persister<Key, Order>,
+    P: 'static + Send + Sync,
 {
-    pub fn load(persister: OP, wal: WAL<LP, E>) -> Result<Self, OrderBookError<E>> {
+    pub fn load(persister: P) -> Result<Self, OrderBookError<P::Error>> {
         let order_book_persister = OrderBookPersisterInner {
             persister,
-            wal,
             alive: AtomicBool::new(true),
         };
         let order_book_persister = OrderBookPersister {
@@ -83,18 +66,7 @@ where
         Ok(order_book_persister)
     }
 
-    fn sync_to_latest(&self) -> Result<(), OrderBookError<E>> {
-        loop {
-            let len = self.sync_once()?;
-            if len == 0 {
-                break;
-            }
-            tracing::info!("synced {} logs", len);
-        }
-        Ok(())
-    }
-
-    fn sync_forever(&self) -> Result<(), OrderBookError<E>> {
+    fn sync_forever(&self) -> Result<(), OrderBookError<P::Error>> {
         while self.inner.alive.load(Ordering::Relaxed) {
             let len = self.sync_once().expect("failed to sync");
             if len == 0 {
@@ -118,32 +90,7 @@ where
         self.inner.alive.store(false, Ordering::Relaxed);
     }
 
-    fn sync_once(&self) -> Result<usize, OrderBookError<E>> {
-        let last_sequence = self.inner.persister.last_sequence()?;
-        let wal_last_sequence = self.inner.wal.last_sequence();
-        if last_sequence == wal_last_sequence {
-            println!("no logs to sync");
-            return Ok(0);
-        }
-        println!(
-            "syncing logs from {} to {}",
-            last_sequence, wal_last_sequence
-        );
-        let logs = self
-            .inner
-            .wal
-            .fetch_logs_by_sequence(last_sequence, 1024)
-            .map_err(OrderBookError::PersisterError)?;
-        let len = logs.len();
-        if len == 0 {
-            return Ok(0);
-        }
-        self.save(logs)?;
-        println!("synced {} logs", len);
-        Ok(len)
-    }
-
-    fn save(&self, logs: Vec<Log>) -> Result<(), OrderBookError<E>> {
+    fn save(&self, logs: Vec<Log>) -> Result<(), OrderBookError<P::Error>> {
         let mut updates = vec![];
         let mut deletes = vec![];
         for log in logs {
@@ -183,7 +130,7 @@ where
         Ok(())
     }
 
-    pub fn load_order_book(&self) -> Result<OrderBook<WAL<LP, E>>, OrderBookError<E>> {
+    pub fn load_order_book(&self) -> Result<OrderBook<WAL<P, P::Error>>, OrderBookError<P::Error>> {
         let last_sequence = self.inner.persister.last_sequence()?;
         let mut buys = BTreeMap::new();
         let mut sells = BTreeMap::new();
@@ -202,23 +149,18 @@ where
             last_price: 0.0, // TODO: load from persister
             buys,
             sells,
-            wal: self.inner.wal.clone(),
         })
     }
 }
 
-impl OrderBookPersister<DB, DB, PersisterError<rocksdb::Error>> {
-    pub fn init(
-        path: &str,
-        wal: WAL<DB, PersisterError<rocksdb::Error>>,
-    ) -> Result<Self, PersisterError<rocksdb::Error>> {
+impl OrderBookPersister<DB> {
+    pub fn init(path: &str) -> Result<Self, PersisterError<rocksdb::Error>> {
         let mut options = Options::default();
         options.create_if_missing(true);
         let persister = DB::open(&options, path).expect("failed to open db");
         let order_book_persister = OrderBookPersister {
             inner: Arc::new(OrderBookPersisterInner {
                 persister,
-                wal,
                 alive: AtomicBool::new(true),
             }),
         };

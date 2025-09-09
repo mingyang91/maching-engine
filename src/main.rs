@@ -1,20 +1,13 @@
-mod all_orders;
-mod logs;
 mod order_book;
-mod order_book_persister;
+// mod order_book_persister;
 mod persister;
 mod protos;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use rocksdb::DB;
-
 use crate::{
-    all_orders::AllOrders,
-    logs::WAL,
     order_book::OrderBook,
-    order_book_persister::OrderBookPersister,
-    persister::PersisterError,
+    persister::Database,
     protos::{Key, Order, OrderStatus, OrderType, Side},
 };
 
@@ -24,28 +17,14 @@ async fn main() {
 }
 
 struct Server {
-    wal: WAL<DB, PersisterError<rocksdb::Error>>,
-    all_orders: AllOrders<DB, DB, PersisterError<rocksdb::Error>>,
-    order_book_persister: OrderBookPersister<DB, DB, PersisterError<rocksdb::Error>>,
-    order_book: OrderBook<WAL<DB, PersisterError<rocksdb::Error>>>,
+    order_book: OrderBook<Database>,
 }
 
 impl Server {
     pub fn new() -> Self {
-        let wal = WAL::init("data/wal").expect("failed to init wal");
-        let all_orders =
-            AllOrders::init("data/all_orders", wal.clone()).expect("failed to init all orders");
-        let order_book_persister = OrderBookPersister::init("data/order_book", wal.clone())
-            .expect("failed to init order book persister");
-        let order_book = order_book_persister
-            .load_order_book()
-            .expect("failed to load order book");
-        Self {
-            wal,
-            all_orders,
-            order_book_persister,
-            order_book,
-        }
+        let database = Database::new("data/order_book").expect("failed to create database");
+        let order_book = OrderBook::create(database).expect("failed to create order book");
+        Self { order_book }
     }
 }
 
@@ -247,9 +226,5 @@ mod tests {
         let server = Server::new();
         println!("order book: {:?}", server.order_book.buys.len());
         println!("order book: {:?}", server.order_book.sells.len());
-        println!(
-            "last sequence: {:?}",
-            server.wal.fetch_logs_by_sequence(20000, 1024)
-        );
     }
 }

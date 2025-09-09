@@ -1,20 +1,21 @@
 use std::{collections::BTreeMap, error::Error};
 
-use rocksdb::DB;
 use tokio::task::yield_now;
 
 use crate::{
-    logs::{LogsPersisterError, WAL},
-    persister::PersisterError,
-    protos::{Execution, Key, Log, Order, OrderStatus, Side, log},
+    persister::AsyncPersister,
+    protos::{Key, Order, OrderStatus, Side},
 };
 
-pub struct OrderBook<W> {
+pub const ORDER_BOOK_CF: &str = "order_book";
+pub const ALL_ORDERS_CF: &str = "all_orders";
+
+pub struct OrderBook<P> {
     pub last_sequence: u64,
     pub last_price: f32,
     pub buys: BTreeMap<Key, Order>,
     pub sells: BTreeMap<Key, Order>,
-    pub wal: W,
+    pub persister: P,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -27,35 +28,15 @@ pub enum OrderBookError<T: Error> {
     CancelOrderError,
 }
 
-fn add_order_log(seq: u64, order: Order) -> Log {
-    Log {
-        sequence: seq,
-        kind: Some(log::Kind::AddOrder(log::AddOrder { order: Some(order) })),
-    }
-}
-
-fn cancel_order_log(seq: u64, key: Key) -> Log {
-    Log {
-        sequence: seq,
-        kind: Some(log::Kind::CancelOrder(log::CancelOrder { key: Some(key) })),
-    }
-}
-
-fn execution_log(seq: u64, execution: Execution) -> Log {
-    Log {
-        sequence: seq,
-        kind: Some(log::Kind::OrderExecution(log::OrderExecution {
-            execution: Some(execution),
-        })),
-    }
-}
-
-impl OrderBook<WAL<DB, PersisterError<rocksdb::Error>>> {
+impl<P> OrderBook<P>
+where
+    P: AsyncPersister<Key, Order> + Clone,
+    P: 'static + Send + Sync,
+{
     pub fn add_order(
         &mut self,
         order: Order,
-    ) -> impl Future<Output = Result<(), OrderBookError<LogsPersisterError<rocksdb::Error>>>> + 'static
-    {
+    ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static {
         let key = order.key.expect("key should be present");
         if order.side() == Side::Buy {
             self.buys.insert(key, order);
@@ -63,18 +44,14 @@ impl OrderBook<WAL<DB, PersisterError<rocksdb::Error>>> {
             self.sells.insert(key, order);
         }
 
-        self.last_sequence += 1;
-        let mut logs = vec![add_order_log(self.last_sequence, order)];
-        let executions = self.run_matching();
+        let (mut updates, deletes) = self.run_matching();
+        updates.push((ORDER_BOOK_CF, key, order));
 
-        for execution in executions {
-            self.last_sequence += 1;
-            logs.push(execution_log(self.last_sequence, execution));
-        }
-        let wal = self.wal.clone();
+        let persister = self.persister.clone();
         async move {
             yield_now().await;
-            wal.insert_batch(logs)
+            persister
+                .save(updates, deletes)
                 .await
                 .inspect_err(|_| {
                     tracing::error!("failed to insert add order log");
@@ -91,25 +68,25 @@ impl OrderBook<WAL<DB, PersisterError<rocksdb::Error>>> {
         &mut self,
         key: Key,
         side: Side,
-    ) -> impl Future<Output = Result<(), OrderBookError<LogsPersisterError<rocksdb::Error>>>> + 'static
-    {
+    ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static {
         let removed = if side == Side::Buy {
             self.buys.remove(&key)
         } else {
             self.sells.remove(&key)
         };
 
-        self.last_sequence += 1;
-        let last_sequence = self.last_sequence;
-        let logs = vec![cancel_order_log(last_sequence, key)];
-        let wal = self.wal.clone();
+        let persister = self.persister.clone();
         async move {
             yield_now().await;
-            let Some(order) = removed else {
+            let Some(mut order) = removed else {
                 return Ok(());
             };
+            order.set_status(OrderStatus::Cancelled);
+            let updates = vec![(ALL_ORDERS_CF, key, order)];
+            let deletes = vec![(ORDER_BOOK_CF, key)];
 
-            wal.insert_batch(logs)
+            persister
+                .save(updates, deletes)
                 .await
                 .inspect_err(|_| {
                     tracing::error!("failed to insert cancel order log");
@@ -121,8 +98,9 @@ impl OrderBook<WAL<DB, PersisterError<rocksdb::Error>>> {
         }
     }
 
-    fn run_matching(&mut self) -> Vec<Execution> {
-        let mut executions = vec![];
+    fn run_matching(&mut self) -> (Vec<(&'static str, Key, Order)>, Vec<(&'static str, Key)>) {
+        let mut updates = vec![];
+        let mut deletes = vec![];
         loop {
             let Some((buy_key, mut buy)) = self.buys.pop_last() else {
                 break;
@@ -143,24 +121,51 @@ impl OrderBook<WAL<DB, PersisterError<rocksdb::Error>>> {
 
             if buy.remaining == 0 {
                 buy.set_status(OrderStatus::Filled);
+                deletes.push((ORDER_BOOK_CF, buy_key));
             } else {
                 self.buys.insert(buy_key, buy);
             }
+            updates.push((ALL_ORDERS_CF, buy_key, buy));
 
             if sell.remaining == 0 {
                 sell.set_status(OrderStatus::Filled);
+                deletes.push((ORDER_BOOK_CF, sell_key));
             } else {
                 self.sells.insert(sell_key, sell);
             }
+            updates.push((ALL_ORDERS_CF, sell_key, sell));
 
-            let execution = Execution {
-                buyer: Some(buy),
-                seller: Some(sell),
-                quantity: buy.quantity.min(sell.quantity),
-            };
-            executions.push(execution);
             self.last_price = buy_key.price;
         }
-        executions
+        (updates, deletes)
+    }
+
+    fn load(&mut self) -> Result<(), P::Error> {
+        let orders = self.persister.load_prefix_iter(ORDER_BOOK_CF, b"")?;
+        for result in orders {
+            let (key, order) = result?;
+            if order.side() == Side::Buy {
+                self.buys.insert(key, order);
+            } else {
+                self.sells.insert(key, order);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn create(persister: P) -> Result<Self, P::Error> {
+        let mut order_book = Self {
+            last_sequence: 0,
+            last_price: 0.0,
+            buys: BTreeMap::new(),
+            sells: BTreeMap::new(),
+            persister,
+        };
+        order_book.load()?;
+        Ok(order_book)
+    }
+
+    pub async fn get_order(&self, key: Key) -> Result<Option<Order>, P::Error> {
+        self.persister.load(ORDER_BOOK_CF, key).await
     }
 }
