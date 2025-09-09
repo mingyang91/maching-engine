@@ -44,8 +44,9 @@ where
             self.sells.insert(key, order);
         }
 
-        let (mut updates, deletes) = self.run_matching();
-        updates.push((ORDER_BOOK_CF, key, order));
+        let mut updates = vec![(ORDER_BOOK_CF, key, order)];
+        let (updates2, deletes) = self.run_matching();
+        updates.extend(updates2);
 
         let persister = self.persister.clone();
         async move {
@@ -57,7 +58,6 @@ where
                     tracing::error!("failed to insert add order log");
                 })
                 .map_err(|_| OrderBookError::AddOrderError)?;
-            println!("added order: {:?}", order);
             tracing::info!("added order: {:?}", order);
             tracing::debug!("added order: {:?}", order);
             Ok(())

@@ -168,21 +168,45 @@ where
         V: 'a,
     {
         let iter = self
-            .iterator_cf(&self.cf(cf), IteratorMode::Start)
+            .full_iterator_cf(&self.cf(cf), IteratorMode::Start)
             .map(|result| {
                 let (key, value) = result?;
                 let key = K::decode(&key[..])
                     .inspect_err(|_| {
                         println!(
-                            "failed to decode key: {:?}, utf8: {:?}",
+                            "failed to decode key: {:?}, hex: {:?}",
                             key,
-                            String::from_utf8_lossy(&key[..])
+                            hex::encode(&key[..])
                         );
                     })
                     .map_err(Self::Error::DecodeKeyError)?;
                 let value = V::decode(&value[..]).map_err(Self::Error::DecodeValueError)?;
                 Ok((key, value))
             });
+        // .filter_map(|result| {
+        //     let (key, value) = result.ok()?;
+        //     let key = K::decode(&key[..])
+        //         .inspect_err(|_| {
+        //             println!(
+        //                 "failed to decode key: {:?}, hex: {:?}",
+        //                 key,
+        //                 hex::encode(&key[..])
+        //             );
+        //         })
+        //         .map_err(Self::Error::DecodeKeyError)
+        //         .ok()?;
+        //     let value = V::decode(&value[..])
+        //         .inspect_err(|_| {
+        //             println!(
+        //                 "failed to decode value: {:?}, hex: {:?}",
+        //                 value,
+        //                 hex::encode(&value[..])
+        //             );
+        //         })
+        //         .map_err(Self::Error::DecodeValueError)
+        //         .ok()?;
+        //     Some(Ok((key, value)))
+        // });
         Ok(Box::new(iter))
     }
 
@@ -250,13 +274,13 @@ enum Command<K, V, E> {
     Close,
 }
 
-struct Inner {
+struct Inner<K, V> {
     db: DB,
-    tx: mpsc::Sender<Command<Vec<u8>, Vec<u8>, PersisterError<rocksdb::Error>>>,
+    tx: mpsc::Sender<Command<K, V, PersisterError<rocksdb::Error>>>,
     handle: Mutex<Option<JoinHandle<()>>>,
 }
 
-impl Drop for Inner {
+impl<K, V> Drop for Inner<K, V> {
     fn drop(&mut self) {
         while let Err(e) = self.tx.try_send(Command::Close) {
             tracing::warn!("failed to send command: {:?}", e);
@@ -273,11 +297,11 @@ impl Drop for Inner {
 }
 
 #[derive(Clone)]
-pub struct Database {
-    inner: Arc<Inner>,
+pub struct Database<K, V> {
+    inner: Arc<Inner<K, V>>,
 }
 
-impl<K, V> AsyncPersister<K, V> for Database
+impl<K, V> AsyncPersister<K, V> for Database<K, V>
 where
     K: Message + Default,
     V: Message + Default,
@@ -298,12 +322,9 @@ where
         let (tx, rx) = oneshot::channel();
         let updates = updates
             .into_iter()
-            .map(|(cf, key, value)| (cf, key.encode_to_vec(), value.encode_to_vec()))
+            .map(|(cf, key, value)| (cf, key, value))
             .collect();
-        let deletes = deletes
-            .into_iter()
-            .map(|(cf, key)| (cf, key.encode_to_vec()))
-            .collect();
+        let deletes = deletes.into_iter().map(|(cf, key)| (cf, key)).collect();
         self.inner
             .tx
             .send(Command::Save {
@@ -321,16 +342,11 @@ where
             .tx
             .send(Command::Load {
                 reply: tx,
-                arg: (cf, key.encode_to_vec()),
+                arg: (cf, key),
             })
             .await
             .expect("failed to send command");
-        let value = rx.await.expect("failed to receive reply")?;
-        let Some(value) = value else {
-            return Ok(None);
-        };
-        let value = V::decode(&value[..]).map_err(Self::Error::DecodeValueError)?;
-        Ok(Some(value))
+        rx.await.expect("failed to receive reply")
     }
 
     fn load_prefix_iter<'a>(
@@ -354,7 +370,11 @@ where
     }
 }
 
-impl Database {
+impl<K, V> Database<K, V>
+where
+    K: Message + Default + 'static,
+    V: Message + Default + 'static,
+{
     pub fn new(path: &'static str) -> Result<Self, PersisterError<rocksdb::Error>> {
         let mut options = Options::default();
         options.create_if_missing(true);
@@ -394,8 +414,8 @@ impl Database {
                     Command::Load { reply, arg } => {
                         let (cf, key) = arg;
                         let value = bind_inner.db.load(cf, key);
-                        if let Err(e) = reply.send(value) {
-                            tracing::warn!("failed to send reply: {:?}", e);
+                        if let Err(_) = reply.send(value) {
+                            tracing::warn!("failed to send reply");
                         }
                     }
                 }

@@ -2,7 +2,11 @@ mod order_book;
 mod persister;
 mod protos;
 
-use crate::{order_book::OrderBook, persister::Database};
+use crate::{
+    order_book::OrderBook,
+    persister::Database,
+    protos::{Key, Order},
+};
 
 #[tokio::main]
 async fn main() {
@@ -10,7 +14,7 @@ async fn main() {
 }
 
 struct Server {
-    order_book: OrderBook<Database>,
+    order_book: OrderBook<Database<Key, Order>>,
 }
 
 impl Server {
@@ -27,7 +31,7 @@ mod tests {
     use std::{
         sync::OnceLock,
         thread,
-        time::{Duration, SystemTime},
+        time::{Duration, Instant, SystemTime},
     };
 
     use prost::Message;
@@ -172,42 +176,42 @@ mod tests {
     #[test]
     fn load_order_book() {
         let sender = serve();
-        let mut g = Gen::new(1000);
-        for _ in 0..10 {
+        let mut g = Gen::new(10000);
+        let mut count = 0;
+        let now = Instant::now();
+        for _ in 0..10000 {
             let orders = Vec::<Order>::arbitrary(&mut g);
+            count += orders.len();
             for order in orders {
                 if let Err(e) = sender.blocking_send(order) {
                     tracing::error!("failed to send order: {:?}", e);
                 }
             }
-            thread::sleep(Duration::from_millis(10));
         }
+        println!("time: {:?}, count: {:?}", now.elapsed(), count);
+    }
 
-        thread::sleep(Duration::from_secs(1));
+    #[quickcheck]
+    fn add_order(order: Order) {
+        let sender = serve();
+        if let Err(e) = sender.blocking_send(order) {
+            println!("failed to send order: {:?}", e);
+        }
+        println!("added order: {:?}", order);
     }
 
     #[test]
     fn test_load_order_book() {
-        // ACTUALLY clean the test database before running
-        let test_path = "data/test_order_book";
-        if std::path::Path::new(test_path).exists() {
-            std::fs::remove_dir_all(test_path).expect("failed to clean test db");
-        }
+        let server = Server::new();
 
-        // Use isolated test database
-        let database = Database::new(test_path).expect("failed to create database");
-        let order_book = OrderBook::create(database).expect("failed to create order book");
-
-        println!("order book: {:?}", order_book.buys.len());
-        println!("order book: {:?}", order_book.sells.len());
-
-        // Clean up after test
-        std::fs::remove_dir_all(test_path).expect("failed to clean test db");
+        println!("order book: {:?}", server.order_book.buys.len());
+        println!("order book: {:?}", server.order_book.sells.len());
     }
 
     #[quickcheck]
     fn enc_dec_key(key: Key) {
         let encoded = key.encode_to_vec();
+        println!("encoded: {:?}", hex::encode(&encoded[..]));
         let decoded = Key::decode(&encoded[..]).expect("failed to decode key");
         assert_eq!(key, decoded);
     }

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+hex = "0.4.3"
 prost = "0.14.1"
 prost-types = "0.14.1"
 rocksdb = { version = "0.24.0", features = ["multi-threaded-cf"] }
