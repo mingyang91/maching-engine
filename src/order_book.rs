@@ -68,7 +68,6 @@ where
                     tracing::error!("failed to insert add order log");
                 })
                 .map_err(|_| OrderBookError::AddOrder)?;
-            tracing::info!("added order: {:?}", order);
             tracing::debug!("added order: {:?}", order);
             Ok(())
         }

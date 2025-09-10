@@ -4,6 +4,10 @@ package matching_engine.protos;
 
 message Key {
     float price = 1;
-    uint64 timestamp = 2;
-    uint32 sequence = 3;
+    ProtoUuid uuid = 2;
+}
+
+message ProtoUuid {
+    uint64 high = 1;
+    uint64 low = 2;
 }

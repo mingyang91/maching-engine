@@ -1,8 +1,34 @@
 use std::{cmp::Ordering, error::Error};
 
 use prost::Message;
+use uuid::Uuid;
 
 include!(concat!(env!("OUT_DIR"), "/matching_engine.protos.rs"));
+
+impl PartialOrd for ProtoUuid {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ProtoUuid {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.high.cmp(&other.high).then(self.low.cmp(&other.low))
+    }
+}
+
+impl From<ProtoUuid> for Uuid {
+    fn from(uuid: ProtoUuid) -> Self {
+        Uuid::from_u64_pair(uuid.high, uuid.low)
+    }
+}
+
+impl From<Uuid> for ProtoUuid {
+    fn from(uuid: Uuid) -> Self {
+        let (high, low) = uuid.as_u64_pair();
+        ProtoUuid { high, low }
+    }
+}
 
 impl Eq for Key {}
 
@@ -21,11 +47,8 @@ impl Ord for Key {
         if price_cmp != Ordering::Equal {
             return price_cmp;
         }
-        let timestamp_cmp = self.timestamp.cmp(&other.timestamp);
-        if timestamp_cmp != Ordering::Equal {
-            return timestamp_cmp;
-        }
-        self.sequence.cmp(&other.sequence)
+
+        self.uuid.cmp(&other.uuid)
     }
 }
 
@@ -33,8 +56,7 @@ impl Ord for Key {
 #[repr(C)]
 pub struct FixedKey {
     pub price: f32,
-    pub timestamp: u64,
-    pub sequence: u32,
+    pub uuid: Uuid,
 }
 
 impl Eq for FixedKey {}
@@ -55,12 +77,7 @@ impl Ord for FixedKey {
             return price_cmp;
         }
 
-        let timestamp_cmp = self.timestamp.cmp(&other.timestamp);
-        if timestamp_cmp != Ordering::Equal {
-            return timestamp_cmp;
-        }
-
-        self.sequence.cmp(&other.sequence)
+        self.uuid.cmp(&other.uuid)
     }
 }
 
@@ -68,8 +85,7 @@ impl From<Key> for FixedKey {
     fn from(key: Key) -> Self {
         FixedKey {
             price: key.price,
-            timestamp: key.timestamp,
-            sequence: key.sequence,
+            uuid: key.uuid.expect("uuid should be present").into(),
         }
     }
 }
@@ -78,8 +94,7 @@ impl From<FixedKey> for Key {
     fn from(key: FixedKey) -> Self {
         Key {
             price: key.price,
-            timestamp: key.timestamp,
-            sequence: key.sequence,
+            uuid: Some(key.uuid.into()),
         }
     }
 }

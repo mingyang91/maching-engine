@@ -32,19 +32,16 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use core::f32;
-    use std::{
-        sync::OnceLock,
-        thread,
-        time::{Instant, SystemTime},
-    };
+    use std::{sync::OnceLock, thread, time::Instant};
 
     use prost::Message;
     use tokio::{
         spawn,
         sync::mpsc::{Sender, channel},
     };
+    use uuid::Uuid;
 
-    use crate::protos::{Key, Order, OrderStatus, OrderType, Side};
+    use crate::protos::{Key, Order, OrderStatus, OrderType, ProtoUuid, Side};
 
     use super::*;
     use quickcheck::{Arbitrary, Gen};
@@ -100,15 +97,18 @@ mod tests {
         }
     }
 
+    impl Arbitrary for ProtoUuid {
+        fn arbitrary(g: &mut Gen) -> Self {
+            let uuid = Uuid::now_v6(&[u8::arbitrary(g); 6]);
+            uuid.into()
+        }
+    }
+
     impl Arbitrary for Key {
         fn arbitrary(g: &mut Gen) -> Self {
             Key {
                 price: gaussian(g, 100.0, 100.0),
-                timestamp: SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .expect("time should be after UNIX_EPOCH")
-                    .as_nanos() as u64,
-                sequence: u32::arbitrary(g),
+                uuid: Some(ProtoUuid::arbitrary(g)),
             }
         }
     }
@@ -127,21 +127,35 @@ mod tests {
         }
     }
 
-    static CHANNEL: OnceLock<Sender<Order>> = OnceLock::new();
+    static CHANNEL: OnceLock<Sender<Vec<Order>>> = OnceLock::new();
 
-    fn serve() -> Sender<Order> {
+    fn serve() -> Sender<Vec<Order>> {
         let sender = CHANNEL.get_or_init(|| {
             let (sender, mut receiver) = channel(65535);
             thread::spawn(move || {
                 Runtime::new()
                     .expect("failed to create runtime")
                     .block_on(async {
+                        // let (fut_tx, mut fut_rx) = channel(65535);
+                        let (fut_tx, fut_rx) = std::sync::mpsc::sync_channel(65535);
+                        let spawned_handle = spawn(async move {
+                            while let Ok(futs) = fut_rx.recv() {
+                                for fut in futs {
+                                    spawn(fut);
+                                }
+                            }
+                        });
                         let mut server = Server::new();
                         println!("server started");
-                        while let Some(order) = receiver.recv().await {
-                            let fut = server.order_book.add_order(order);
-                            spawn(fut);
+                        while let Some(orders) = receiver.recv().await {
+                            let mut futs = vec![];
+                            for order in orders {
+                                let fut = server.order_book.add_order(order);
+                                futs.push(Box::pin(fut));
+                            }
+                            let _ = fut_tx.send(futs);
                         }
+                        spawned_handle.await.expect("failed to join spawned handle");
                         println!("server stopped");
                     })
             });
@@ -154,7 +168,7 @@ mod tests {
     fn test_new_order(order: Order) {
         println!("sending order: {order:?}");
         let sender = serve();
-        if let Err(e) = sender.blocking_send(order) {
+        if let Err(e) = sender.blocking_send(vec![order]) {
             tracing::error!("failed to send order: {:?}", e);
         }
     }
@@ -162,11 +176,9 @@ mod tests {
     #[quickcheck]
     fn test_new_orders(orders: Vec<Order>) {
         let sender = serve();
-        for order in orders {
-            println!("sending order: {order:?}");
-            if let Err(e) = sender.blocking_send(order) {
-                tracing::error!("failed to send order: {:?}", e);
-            }
+        println!("sending order: {orders:?}");
+        if let Err(e) = sender.blocking_send(orders) {
+            tracing::error!("failed to send order: {:?}", e);
         }
     }
 
@@ -179,22 +191,21 @@ mod tests {
         for _ in 0..10000 {
             let orders = Vec::<Order>::arbitrary(&mut g);
             count += orders.len();
-            for order in orders {
-                if let Err(e) = sender.blocking_send(order) {
-                    tracing::error!("failed to send order: {:?}", e);
-                }
+            if let Err(e) = sender.blocking_send(orders) {
+                tracing::error!("failed to send order: {e:?}");
             }
         }
         println!("time: {:?}, count: {:?}", now.elapsed(), count);
     }
 
     #[quickcheck]
-    fn add_order(order: Order) {
+    fn add_order(orders: Vec<Order>) {
         let sender = serve();
-        if let Err(e) = sender.blocking_send(order) {
+        let len = orders.len();
+        if let Err(e) = sender.blocking_send(orders) {
             println!("failed to send order: {e:?}");
         }
-        println!("added order: {order:?}");
+        println!("added orders: {len}");
     }
 
     #[test]
