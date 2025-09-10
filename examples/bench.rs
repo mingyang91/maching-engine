@@ -14,17 +14,20 @@ use quickcheck::{Arbitrary, Gen};
 async fn main() {
     tracing_subscriber::fmt::init();
     let (sender, mut receiver) = channel(65535);
-    let (fut_tx, fut_rx) = std::sync::mpsc::sync_channel(65535);
+    // let (fut_tx, fut_rx) = std::sync::mpsc::sync_channel(65535);
+    let (fut_tx, mut fut_rx) = channel(65535);
     let spawned_handle = spawn(async move {
-        while let Ok(futs) = fut_rx.recv() {
+        let mut join_set = tokio::task::JoinSet::new();
+        while let Some(futs) = fut_rx.recv().await {
             for fut in futs {
-                spawn(fut);
+                join_set.spawn(fut);
             }
         }
+        join_set.join_all().await;
     });
 
     let order_gen_handle = spawn(async move {
-        let mut g = Gen::new(10000);
+        let mut g = Gen::new(1000);
         let mut count = 0;
         let now = Instant::now();
         for _ in 0..10000 {
@@ -46,9 +49,12 @@ async fn main() {
                 let fut = server.order_book.add_order(order);
                 futs.push(Box::pin(fut));
             }
-            let _ = fut_tx.send(futs);
+            let _ = fut_tx.send(futs).await;
         }
     });
-    let _ = join!(order_gen_handle, spawned_handle, order_book_handle);
+    let (res1, res2, res3) = join!(order_gen_handle, spawned_handle, order_book_handle);
+    res1.expect("failed to join order gen handle");
+    res2.expect("failed to join spawned handle");
+    res3.expect("failed to join order book handle");
     tracing::info!("server stopped");
 }

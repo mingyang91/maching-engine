@@ -379,9 +379,14 @@ where
             tx,
             handle: placeholder,
         });
-        let bind_inner = inner.clone();
+        let bind_inner = Arc::downgrade(&inner);
         let handle = thread::spawn(move || {
+            let mut start = None;
+            let mut count: usize = 0;
             while let Some(command) = rx.blocking_recv() {
+                if start.is_none() {
+                    start = Some(std::time::Instant::now());
+                }
                 match command {
                     Command::Close => break,
                     Command::Save {
@@ -389,20 +394,30 @@ where
                         updates,
                         deletes,
                     } => {
+                        let bind_inner = bind_inner.upgrade().expect("inner should be present");
+                        let deletes_len = deletes.len();
                         let res = bind_inner.db.save(updates, deletes);
                         if let Err(e) = reply.send(res) {
-                            tracing::debug!("failed to send reply: {:?}", e);
+                            tracing::warn!("failed to send reply: {:?}", e);
+                        } else {
+                            count += deletes_len;
                         }
                     }
                     Command::Load { reply, cf, key } => {
+                        let bind_inner = bind_inner.upgrade().expect("inner should be present");
                         let value = bind_inner.db.load(cf, key);
                         if reply.send(value).is_err() {
-                            tracing::debug!("failed to send reply");
+                            tracing::warn!("failed to send reply");
                         }
                     }
                 }
             }
-            tracing::info!("persister thread stopped");
+            tracing::info!(
+                "persister thread stopped, count: {:?}, time: {:?}, {:?} tps",
+                count,
+                start.unwrap().elapsed(),
+                count as f64 / start.unwrap().elapsed().as_secs_f64()
+            );
         });
         *inner.handle.lock().expect("failed to lock handle") = Some(handle);
 
