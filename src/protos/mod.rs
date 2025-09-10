@@ -1,6 +1,7 @@
 use std::{cmp::Ordering, error::Error};
 
 use prost::Message;
+use quickcheck::{Arbitrary, Gen};
 use uuid::Uuid;
 
 include!(concat!(env!("OUT_DIR"), "/matching_engine.protos.rs"));
@@ -181,4 +182,88 @@ where
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
         T::decode(bytes)
     }
+}
+
+impl Arbitrary for Side {
+    fn arbitrary(g: &mut Gen) -> Self {
+        *g.choose(&[Side::Buy, Side::Sell])
+            .expect("should choose side")
+    }
+}
+
+impl Arbitrary for OrderType {
+    fn arbitrary(g: &mut Gen) -> Self {
+        *g.choose(&[
+            OrderType::Limit,
+            OrderType::Market,
+            OrderType::Stop,
+            OrderType::StopLimit,
+        ])
+        .expect("should choose order type")
+    }
+}
+
+impl Arbitrary for OrderStatus {
+    fn arbitrary(g: &mut Gen) -> Self {
+        *g.choose(&[
+            OrderStatus::Open,
+            OrderStatus::PartiallyFilled,
+            OrderStatus::Filled,
+            OrderStatus::Cancelled,
+        ])
+        .expect("should choose order status")
+    }
+}
+
+impl Arbitrary for ProtoUuid {
+    fn arbitrary(g: &mut Gen) -> Self {
+        let uuid = Uuid::now_v6(&[u8::arbitrary(g); 6]);
+        uuid.into()
+    }
+}
+
+impl Arbitrary for Key {
+    fn arbitrary(g: &mut Gen) -> Self {
+        Key {
+            price: gaussian(g, 100.0, 100.0),
+            uuid: Some(ProtoUuid::arbitrary(g)),
+        }
+    }
+}
+
+impl Arbitrary for Order {
+    fn arbitrary(g: &mut Gen) -> Self {
+        let quantity = log_gaussian(g, 100.0, 2.48).ceil() as u64 + 1;
+        Order {
+            key: Some(Key::arbitrary(g)),
+            side: Side::arbitrary(g).into(),
+            order_type: OrderType::arbitrary(g).into(),
+            quantity,
+            remaining: quantity,
+            status: OrderStatus::Open.into(),
+        }
+    }
+}
+
+fn gaussian(g: &mut Gen, mean: f32, std_dev: f32) -> f32 {
+    let x = f32::arbitrary(g);
+    let x = match x {
+        -1.0..=1.0 => x,
+        f32::INFINITY => 1.0,
+        f32::NEG_INFINITY => -1.0,
+        _ if x.is_nan() => 0.0,
+        _ => x / f32::MAX,
+    };
+    let x = if x < 0.0 {
+        -x.abs().sqrt()
+    } else {
+        x.abs().sqrt()
+    };
+    let res = mean + std_dev * x;
+    if res == 0.0 { 1e-10 } else { res }
+}
+
+fn log_gaussian(g: &mut Gen, mu: f32, sigma: f32) -> f32 {
+    let y = gaussian(g, mu, sigma);
+    y.exp()
 }

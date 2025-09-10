@@ -26,12 +26,14 @@ where
     #[allow(dead_code)]
     fn put_last_sequence(&self, sequence: u64) -> Result<(), Self::Error>;
 
+    #[allow(dead_code)]
     fn save(
         &self,
         updates: Vec<(&'static str, K, V)>,
         deletes: Vec<(&'static str, K)>,
     ) -> Result<(), Self::Error>;
 
+    #[allow(dead_code)]
     fn load(&self, cf: &'static str, key: K) -> Result<Option<V>, Self::Error>;
 
     fn load_prefix_iter<'a>(
@@ -351,6 +353,7 @@ where
     K: TryFromBytes + ToBytes + 'static,
     V: TryFromBytes + ToBytes + 'static,
 {
+    #[allow(dead_code)]
     pub fn new(path: &'static str) -> Result<Self, PersisterError<rocksdb::Error>> {
         let mut options = Options::default();
         options.create_if_missing(true);
@@ -388,13 +391,13 @@ where
                     } => {
                         let res = bind_inner.db.save(updates, deletes);
                         if let Err(e) = reply.send(res) {
-                            tracing::warn!("failed to send reply: {:?}", e);
+                            tracing::debug!("failed to send reply: {:?}", e);
                         }
                     }
                     Command::Load { reply, cf, key } => {
                         let value = bind_inner.db.load(cf, key);
                         if reply.send(value).is_err() {
-                            tracing::warn!("failed to send reply");
+                            tracing::debug!("failed to send reply");
                         }
                     }
                 }

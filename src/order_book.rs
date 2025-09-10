@@ -40,7 +40,7 @@ where
     pub fn add_order(
         &mut self,
         order: Order,
-    ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static {
+    ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static + use<P> {
         let mut updates = vec![];
         let key = order.key.expect("key should be present");
         if order.side() == Side::Buy {
@@ -169,6 +169,7 @@ where
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn create(persister: P) -> Result<Self, P::Error> {
         let mut order_book = Self {
             last_price: 0.0,
