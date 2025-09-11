@@ -15,3 +15,9 @@ impl Server {
         Self { order_book }
     }
 }
+
+impl Default for Server {
+    fn default() -> Self {
+        Self::new()
+    }
+}

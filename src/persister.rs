@@ -19,19 +19,12 @@ where
         Self: 'a,
         V: 'a;
 
-    #[allow(dead_code)]
-    fn last_sequence(&self) -> Result<u64, Self::Error>;
-    #[allow(dead_code)]
-    fn put_last_sequence(&self, sequence: u64) -> Result<(), Self::Error>;
-
-    #[allow(dead_code)]
     fn save(
         &self,
         updates: Vec<(&'static str, [u8; 16], V)>,
         deletes: Vec<(&'static str, [u8; 16])>,
     ) -> Result<(), Self::Error>;
 
-    #[allow(dead_code)]
     fn load(&self, cf: &'static str, key: [u8; 16]) -> Result<Option<V>, Self::Error>;
 
     fn load_prefix_iter<'a>(
@@ -63,11 +56,11 @@ pub enum PersisterError<T: Error> {
     DB(#[from] T),
     #[error("failed to decode value")]
     DecodeValue(Box<dyn Error + Send + Sync + 'static>),
-    #[error("failed to decode sequence")]
-    DecodeSequence(prost::DecodeError),
 }
 
+#[allow(dead_code)]
 const META_CF: &str = "meta";
+#[allow(dead_code)]
 const LAST_SEQUENCE_KEY: &str = "last_sequence";
 
 trait ColumnFamily {
@@ -95,18 +88,6 @@ where
     where
         Self: 'a,
         V: 'a;
-
-    fn last_sequence(&self) -> Result<u64, Self::Error> {
-        let Some(value) = self.get_cf(&self.cf(META_CF), LAST_SEQUENCE_KEY)? else {
-            return Ok(0);
-        };
-        u64::try_from_bytes(&value[..]).map_err(PersisterError::DecodeSequence)
-    }
-
-    fn put_last_sequence(&self, sequence: u64) -> Result<(), Self::Error> {
-        self.put_cf(&self.cf(META_CF), LAST_SEQUENCE_KEY, sequence.to_le_bytes())?;
-        Ok(())
-    }
 
     fn load(&self, cf: &'static str, key: [u8; 16]) -> Result<Option<V>, Self::Error> {
         let Some(value) = self.get_cf(&self.cf(cf), key)? else {
@@ -401,11 +382,12 @@ where
                     }
                 }
             }
+            let elapsed = start.map(|s| s.elapsed()).unwrap_or_default();
             tracing::info!(
                 "persister thread stopped, count: {:?}, time: {:?}, {:?} tps",
                 count,
-                start.unwrap().elapsed(),
-                count as f64 / start.unwrap().elapsed().as_secs_f64()
+                elapsed,
+                count as f64 / elapsed.as_secs_f64()
             );
         });
         *inner.handle.lock().expect("failed to lock handle") = Some(handle);
