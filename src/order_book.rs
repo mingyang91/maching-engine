@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, error::Error, time::Instant};
 
 use crate::{
     persister::AsyncPersister,
-    protos::{Order, OrderKey, OrderStatus, Side},
+    protos::{Order, OrderKey, OrderStatus, PricebasedKey, Side, TimebasedKey},
 };
 
 pub const BUYS_CF: &str = "buys";
@@ -11,8 +11,8 @@ pub const ALL_ORDERS_CF: &str = "all_orders";
 
 pub struct OrderBook<P> {
     pub last_price: f32,
-    pub buys: BTreeMap<OrderKey, Order>,
-    pub sells: BTreeMap<OrderKey, Order>,
+    pub buys: BTreeMap<PricebasedKey, Order>,
+    pub sells: BTreeMap<PricebasedKey, Order>,
     pub persister: P,
 }
 
@@ -122,39 +122,52 @@ where
 
         loop {
             if buy_key.get_price() < sell_key.get_price() {
+                // println!(
+                //     "price mismatch, {} < {}",
+                //     buy_key.get_price(),
+                //     sell_key.get_price()
+                // );
                 self.buys.insert(buy_key, buy);
                 self.sells.insert(sell_key, sell);
                 break;
             }
+            // println!(
+            //     "price matched, {} >= {}",
+            //     buy_key.get_price(),
+            //     sell_key.get_price()
+            // );
             let quantity = buy.remaining.min(sell.remaining);
 
+            let buy_key_timebased: TimebasedKey = buy_key.into();
             buy.remaining -= quantity;
             sell.remaining -= quantity;
-
             if buy.remaining == 0 {
                 buy.set_status(OrderStatus::Filled);
-                deletes.push((BUYS_CF, buy_key.pricebased_bytes()));
-                updates.push((ALL_ORDERS_CF, buy_key.timebased_bytes(), buy));
+                deletes.push((BUYS_CF, buy_key.to_bytes()));
+                updates.push((ALL_ORDERS_CF, buy_key_timebased.to_bytes(), buy));
                 let Some((next_buy_key, next_buy)) = self.buys.pop_last() else {
                     break;
                 };
                 buy_key = next_buy_key;
                 buy = next_buy;
             } else {
-                updates.push((ALL_ORDERS_CF, buy_key.timebased_bytes(), buy));
+                buy.set_status(OrderStatus::PartiallyFilled);
+                updates.push((ALL_ORDERS_CF, buy_key_timebased.to_bytes(), buy));
             }
 
+            let sell_key_timebased: TimebasedKey = sell_key.into();
             if sell.remaining == 0 {
                 sell.set_status(OrderStatus::Filled);
-                deletes.push((SELLS_CF, sell_key.pricebased_bytes()));
-                updates.push((ALL_ORDERS_CF, sell_key.timebased_bytes(), sell));
+                deletes.push((SELLS_CF, sell_key.to_bytes()));
+                updates.push((ALL_ORDERS_CF, sell_key_timebased.to_bytes(), sell));
                 let Some((next_sell_key, next_sell)) = self.sells.pop_first() else {
                     break;
                 };
                 sell_key = next_sell_key;
                 sell = next_sell;
             } else {
-                updates.push((ALL_ORDERS_CF, sell_key.timebased_bytes(), sell));
+                sell.set_status(OrderStatus::PartiallyFilled);
+                updates.push((ALL_ORDERS_CF, sell_key_timebased.to_bytes(), sell));
             }
 
             self.last_price = buy_key.get_price();
@@ -175,17 +188,17 @@ where
         let buys = self.persister.load_all_iter(BUYS_CF)?;
         for result in buys {
             let (key, order) = result?;
-            self.buys.insert(OrderKey::from_pricebased(key), order);
+            self.buys.insert(PricebasedKey::from_bytes(key), order);
         }
-        println!("load {} buys in {:?}", self.buys.len(), now.elapsed());
+        tracing::info!("load {} buys in {:?}", self.buys.len(), now.elapsed());
 
         let now = Instant::now();
         let sells = self.persister.load_all_iter(SELLS_CF)?;
         for result in sells {
             let (key, order) = result?;
-            self.sells.insert(OrderKey::from_pricebased(key), order);
+            self.sells.insert(PricebasedKey::from_bytes(key), order);
         }
-        println!("load {} sells in {:?}", self.sells.len(), now.elapsed());
+        tracing::info!("load {} sells in {:?}", self.sells.len(), now.elapsed());
         Ok(())
     }
 
