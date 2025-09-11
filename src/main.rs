@@ -9,5 +9,6 @@ use matching_engine::Server;
 
 #[tokio::main]
 async fn main() {
-    let _server = Server::new();
+    let server = Server::new();
+    drop(server);
 }

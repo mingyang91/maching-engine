@@ -209,6 +209,7 @@ where
     where
         V: 'a;
 
+    #[allow(dead_code)]
     fn load_all_iter<'a>(&'a self, cf: &'static str) -> Result<Self::Iter<'a>, Self::Error>
     where
         V: 'a;
