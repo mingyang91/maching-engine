@@ -44,13 +44,13 @@ where
         let mut updates = vec![];
         let key: OrderKey = order.key.expect("key should be present").into();
         if order.side() == Side::Buy {
-            self.buys.insert(key, order);
-            updates.push((BUYS_CF, key.pricebased(), order));
-            updates.push((ALL_ORDERS_CF, key.timebased(), order));
+            self.buys.insert(key.pricebased(), order);
+            updates.push((BUYS_CF, key.pricebased_bytes(), order));
+            updates.push((ALL_ORDERS_CF, key.timebased_bytes(), order));
         } else {
-            self.sells.insert(key, order);
-            updates.push((SELLS_CF, key.pricebased(), order));
-            updates.push((ALL_ORDERS_CF, key.timebased(), order));
+            self.sells.insert(key.pricebased(), order);
+            updates.push((SELLS_CF, key.pricebased_bytes(), order));
+            updates.push((ALL_ORDERS_CF, key.timebased_bytes(), order));
         }
 
         let MatchingResult {
@@ -80,9 +80,9 @@ where
         side: Side,
     ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static {
         let removed = if side == Side::Buy {
-            self.buys.remove(&key)
+            self.buys.remove(&key.pricebased())
         } else {
-            self.sells.remove(&key)
+            self.sells.remove(&key.pricebased())
         };
 
         let persister = self.persister.clone();
@@ -91,9 +91,9 @@ where
                 return Ok(());
             };
             order.set_status(OrderStatus::Cancelled);
-            let updates = vec![(ALL_ORDERS_CF, key.timebased(), order)];
+            let updates = vec![(ALL_ORDERS_CF, key.timebased_bytes(), order)];
             let cf = if side == Side::Buy { BUYS_CF } else { SELLS_CF };
-            let deletes = vec![(cf, key.pricebased())];
+            let deletes = vec![(cf, key.pricebased_bytes())];
 
             persister
                 .save(updates, deletes)
@@ -111,19 +111,21 @@ where
     fn run_matching(&mut self) -> MatchingResult {
         let mut updates = vec![];
         let mut deletes = vec![];
+
+        let Some((mut buy_key, mut buy)) = self.buys.pop_last() else {
+            return MatchingResult { updates, deletes };
+        };
+        let Some((mut sell_key, mut sell)) = self.sells.pop_first() else {
+            self.buys.insert(buy_key, buy);
+            return MatchingResult { updates, deletes };
+        };
+
         loop {
-            let Some((buy_key, mut buy)) = self.buys.pop_last() else {
-                break;
-            };
-
-            let Some((sell_key, mut sell)) = self.sells.pop_first() else {
-                break;
-            };
-
             if buy_key.get_price() < sell_key.get_price() {
+                self.buys.insert(buy_key, buy);
+                self.sells.insert(sell_key, sell);
                 break;
             }
-
             let quantity = buy.remaining.min(sell.remaining);
 
             buy.remaining -= quantity;
@@ -131,22 +133,40 @@ where
 
             if buy.remaining == 0 {
                 buy.set_status(OrderStatus::Filled);
-                deletes.push((BUYS_CF, buy_key.pricebased()));
+                deletes.push((BUYS_CF, buy_key.pricebased_bytes()));
+                updates.push((ALL_ORDERS_CF, buy_key.timebased_bytes(), buy));
+                let Some((next_buy_key, next_buy)) = self.buys.pop_last() else {
+                    break;
+                };
+                buy_key = next_buy_key;
+                buy = next_buy;
             } else {
-                self.buys.insert(buy_key, buy);
+                updates.push((ALL_ORDERS_CF, buy_key.timebased_bytes(), buy));
             }
-            updates.push((ALL_ORDERS_CF, buy_key.timebased(), buy));
 
             if sell.remaining == 0 {
                 sell.set_status(OrderStatus::Filled);
-                deletes.push((SELLS_CF, sell_key.pricebased()));
+                deletes.push((SELLS_CF, sell_key.pricebased_bytes()));
+                updates.push((ALL_ORDERS_CF, sell_key.timebased_bytes(), sell));
+                let Some((next_sell_key, next_sell)) = self.sells.pop_first() else {
+                    break;
+                };
+                sell_key = next_sell_key;
+                sell = next_sell;
             } else {
-                self.sells.insert(sell_key, sell);
+                updates.push((ALL_ORDERS_CF, sell_key.timebased_bytes(), sell));
             }
-            updates.push((ALL_ORDERS_CF, sell_key.timebased(), sell));
 
             self.last_price = buy_key.get_price();
         }
+
+        if buy.remaining > 0 {
+            self.buys.insert(buy_key, buy);
+        }
+        if sell.remaining > 0 {
+            self.sells.insert(sell_key, sell);
+        }
+
         MatchingResult { updates, deletes }
     }
 
@@ -183,6 +203,8 @@ where
 
     #[allow(dead_code)]
     pub async fn get_order(&self, key: OrderKey) -> Result<Option<Order>, P::Error> {
-        self.persister.load(ALL_ORDERS_CF, key.timebased()).await
+        self.persister
+            .load(ALL_ORDERS_CF, key.timebased_bytes())
+            .await
     }
 }

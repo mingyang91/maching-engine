@@ -22,7 +22,7 @@ impl Ord for Key {
 
 impl From<OrderKey> for Key {
     fn from(key: OrderKey) -> Self {
-        let bytes = key.timebased();
+        let bytes = key.timebased_bytes();
         let mut high_bytes = [0; 8];
         high_bytes.copy_from_slice(&bytes[0..8]);
         let high = u64::from_le_bytes(high_bytes);

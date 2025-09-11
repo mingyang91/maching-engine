@@ -15,7 +15,7 @@ impl OrderKey {
         Self::TimeBased(uuid.into_bytes())
     }
 
-    pub fn timebased(&self) -> [u8; 16] {
+    pub fn timebased_bytes(&self) -> [u8; 16] {
         match self {
             Self::TimeBased(bytes) => *bytes,
             Self::PriceBased(bytes) => {
@@ -27,7 +27,12 @@ impl OrderKey {
         }
     }
 
-    pub fn pricebased(&self) -> [u8; 16] {
+    #[allow(dead_code)]
+    pub fn timebased(&self) -> OrderKey {
+        Self::from_timebased(self.timebased_bytes())
+    }
+
+    pub fn pricebased_bytes(&self) -> [u8; 16] {
         match self {
             Self::TimeBased(bytes) => {
                 let mut new = [0; 16];
@@ -37,6 +42,10 @@ impl OrderKey {
             }
             Self::PriceBased(bytes) => *bytes,
         }
+    }
+
+    pub fn pricebased(&self) -> OrderKey {
+        Self::from_pricebased(self.pricebased_bytes())
     }
 
     pub fn from_timebased(bytes: [u8; 16]) -> Self {
