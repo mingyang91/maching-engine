@@ -3,11 +3,6 @@ syntax = "proto3";
 package matching_engine.protos;
 
 message Key {
-    float price = 1;
-    ProtoUuid uuid = 2;
-}
-
-message ProtoUuid {
     uint64 high = 1;
     uint64 low = 2;
 }

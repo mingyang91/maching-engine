@@ -2,14 +2,10 @@ pub mod order_book;
 pub mod persister;
 pub mod protos;
 
-use crate::{
-    order_book::OrderBook,
-    persister::Database,
-    protos::{FixedKey, Order},
-};
+use crate::{order_book::OrderBook, persister::Database, protos::Order};
 
 pub struct Server {
-    pub order_book: OrderBook<Database<FixedKey, Order>>,
+    pub order_book: OrderBook<Database<Order>>,
 }
 
 impl Server {

@@ -1,37 +1,12 @@
+mod key;
+
 use std::{cmp::Ordering, error::Error};
 
+pub use key::*;
 use prost::Message;
 use quickcheck::{Arbitrary, Gen};
-use uuid::Uuid;
 
 include!(concat!(env!("OUT_DIR"), "/matching_engine.protos.rs"));
-
-impl PartialOrd for ProtoUuid {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for ProtoUuid {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.high.cmp(&other.high).then(self.low.cmp(&other.low))
-    }
-}
-
-impl From<ProtoUuid> for Uuid {
-    fn from(uuid: ProtoUuid) -> Self {
-        Uuid::from_u64_pair(uuid.high, uuid.low)
-    }
-}
-
-impl From<Uuid> for ProtoUuid {
-    fn from(uuid: Uuid) -> Self {
-        let (high, low) = uuid.as_u64_pair();
-        ProtoUuid { high, low }
-    }
-}
-
-impl Eq for Key {}
 
 impl PartialOrd for Key {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -41,86 +16,30 @@ impl PartialOrd for Key {
 
 impl Ord for Key {
     fn cmp(&self, other: &Self) -> Ordering {
-        let price_cmp = self
-            .price
-            .partial_cmp(&other.price)
-            .expect("price should be comparable");
-        if price_cmp != Ordering::Equal {
-            return price_cmp;
-        }
-
-        self.uuid.cmp(&other.uuid)
+        self.high.cmp(&other.high).then(self.low.cmp(&other.low))
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(C)]
-pub struct FixedKey {
-    pub price: f32,
-    pub uuid: Uuid,
-}
-
-impl Eq for FixedKey {}
-
-impl PartialOrd for FixedKey {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+impl From<OrderKey> for Key {
+    fn from(key: OrderKey) -> Self {
+        let bytes = key.timebased();
+        let mut high_bytes = [0; 8];
+        high_bytes.copy_from_slice(&bytes[0..8]);
+        let high = u64::from_le_bytes(high_bytes);
+        let mut low_bytes = [0; 8];
+        low_bytes.copy_from_slice(&bytes[8..16]);
+        let low = u64::from_le_bytes(low_bytes);
+        Key { high, low }
     }
 }
 
-impl Ord for FixedKey {
-    fn cmp(&self, other: &Self) -> Ordering {
-        let price_cmp = self
-            .price
-            .partial_cmp(&other.price)
-            .expect("price should be comparable");
-        if price_cmp != Ordering::Equal {
-            return price_cmp;
-        }
-
-        self.uuid.cmp(&other.uuid)
-    }
-}
-
-impl From<Key> for FixedKey {
+impl From<Key> for OrderKey {
     fn from(key: Key) -> Self {
-        FixedKey {
-            price: key.price,
-            uuid: key.uuid.expect("uuid should be present").into(),
-        }
-    }
-}
+        let mut bytes = [0; 16];
+        bytes[0..8].copy_from_slice(&key.high.to_le_bytes());
+        bytes[8..16].copy_from_slice(&key.low.to_le_bytes());
 
-impl From<FixedKey> for Key {
-    fn from(key: FixedKey) -> Self {
-        Key {
-            price: key.price,
-            uuid: Some(key.uuid.into()),
-        }
-    }
-}
-
-impl AsRef<[u8]> for FixedKey {
-    fn as_ref(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                std::mem::size_of::<Self>(),
-            )
-        }
-    }
-}
-
-impl TryFrom<&[u8]> for FixedKey {
-    type Error = std::io::Error;
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        if value.len() != std::mem::size_of::<Self>() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid key length",
-            ));
-        }
-        Ok(unsafe { std::ptr::read(value.as_ptr() as *const Self) })
+        OrderKey::from_timebased(bytes)
     }
 }
 
@@ -153,19 +72,6 @@ where
 {
     fn to_bytes(&self) -> Vec<u8> {
         self.encode_to_vec()
-    }
-}
-
-impl ToBytes for FixedKey {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.as_ref().to_vec()
-    }
-}
-
-impl TryFromBytes for FixedKey {
-    type Error = std::io::Error;
-    fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        Self::try_from(bytes)
     }
 }
 
@@ -215,19 +121,10 @@ impl Arbitrary for OrderStatus {
     }
 }
 
-impl Arbitrary for ProtoUuid {
+impl Arbitrary for OrderKey {
     fn arbitrary(g: &mut Gen) -> Self {
-        let uuid = Uuid::now_v6(&[u8::arbitrary(g); 6]);
-        uuid.into()
-    }
-}
-
-impl Arbitrary for Key {
-    fn arbitrary(g: &mut Gen) -> Self {
-        Key {
-            price: gaussian(g, 100.0, 100.0),
-            uuid: Some(ProtoUuid::arbitrary(g)),
-        }
+        let price = gaussian(g, 100.0, 100.0);
+        Self::new(price)
     }
 }
 
@@ -235,7 +132,7 @@ impl Arbitrary for Order {
     fn arbitrary(g: &mut Gen) -> Self {
         let quantity = log_gaussian(g, 100.0, 2.48).ceil() as u64 + 1;
         Order {
-            key: Some(Key::arbitrary(g)),
+            key: Some(OrderKey::arbitrary(g).into()),
             side: Side::arbitrary(g).into(),
             order_type: OrderType::arbitrary(g).into(),
             quantity,
