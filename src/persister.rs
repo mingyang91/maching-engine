@@ -385,7 +385,7 @@ where
             }
             let elapsed = start.map(|s| s.elapsed()).unwrap_or_default();
             tracing::info!(
-                "persister thread stopped, count: {:?}, time: {:?}, {:?} tps",
+                "persister thread stopped, count: {:?}, time: {:?}, {:.2} tps",
                 count,
                 elapsed,
                 count as f64 / elapsed.as_secs_f64()

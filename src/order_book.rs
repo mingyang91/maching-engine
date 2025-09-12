@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error, time::Instant};
+use std::{collections::BTreeMap, error::Error, marker::PhantomData, ptr::NonNull, time::Instant};
 
 use crate::{
     persister::AsyncPersister,
@@ -26,9 +26,221 @@ pub enum OrderBookError<T: Error> {
     CancelOrder,
 }
 
-struct MatchingResult {
-    updates: Vec<(&'static str, [u8; 16], Order)>,
-    deletes: Vec<(&'static str, [u8; 16])>,
+pub struct Transaction<'ob, P> {
+    pub order_book: &'ob mut OrderBook<P>,
+    pub updates: Vec<(&'static str, [u8; 16], Order)>,
+    pub deletes: Vec<(&'static str, [u8; 16])>,
+}
+
+struct DormantMutRef<'a, T> {
+    ptr: NonNull<T>,
+    _marker: PhantomData<&'a T>,
+}
+
+impl<'a, T> DormantMutRef<'a, T> {
+    #[allow(dead_code)]
+    pub fn new(t: &'a mut T) -> (&'a mut T, Self) {
+        let ptr = NonNull::from(t);
+        let new_ref = unsafe { &mut *ptr.as_ptr() };
+        (
+            new_ref,
+            Self {
+                ptr,
+                _marker: PhantomData,
+            },
+        )
+    }
+
+    pub fn new_shared(t: &'a T) -> (&'a T, Self) {
+        let ptr = NonNull::from(t);
+        let new_ref = unsafe { &*ptr.as_ptr() };
+        (
+            new_ref,
+            Self {
+                ptr,
+                _marker: PhantomData,
+            },
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn awaken(self) -> &'a mut T {
+        unsafe { &mut *self.ptr.as_ptr() }
+    }
+
+    pub fn reborrow(&mut self) -> &'a mut T {
+        unsafe { &mut *self.ptr.as_ptr() }
+    }
+
+    #[allow(dead_code)]
+    pub fn reborrow_shared(&self) -> &'a T {
+        unsafe { &*self.ptr.as_ptr() }
+    }
+}
+
+impl<'ob, P> Transaction<'ob, P> {
+    pub fn new(order_book: &'ob mut OrderBook<P>) -> Self {
+        Self {
+            order_book,
+            updates: vec![],
+            deletes: vec![],
+        }
+    }
+
+    pub fn add_order(&mut self, order: Order) {
+        let key: TimebasedKey = order.key.expect("key should be present").into();
+        if order.side() == Side::Buy {
+            self.order_book.buys.insert(key.to_pricebased(), order);
+            self.updates
+                .push((BUYS_CF, key.to_pricebased().to_bytes(), order));
+            self.updates.push((ALL_ORDERS_CF, key.to_bytes(), order));
+        } else {
+            self.order_book.sells.insert(key.to_pricebased(), order);
+            self.updates
+                .push((SELLS_CF, key.to_pricebased().to_bytes(), order));
+            self.updates.push((ALL_ORDERS_CF, key.to_bytes(), order));
+        }
+    }
+
+    pub fn commit(self) -> impl Future<Output = Result<(), P::Error>> + 'static
+    where
+        P: AsyncPersister<Order> + Clone,
+        P: 'static + Send + Sync,
+    {
+        let p = self.order_book.persister.clone();
+        let updates = self.updates;
+        let deletes = self.deletes;
+        async move {
+            p.save(updates, deletes).await.inspect_err(|_| {
+                tracing::error!("failed to insert transaction log");
+            })?;
+            Ok(())
+        }
+    }
+
+    pub fn best_buy(&self) -> Option<OrderRef<'_, 'ob, P>> {
+        let (_, mut dormant_transaction) = DormantMutRef::new_shared(self);
+        let Some((key, order)) = dormant_transaction.reborrow().order_book.buys.pop_last() else {
+            return None;
+        };
+        Some(OrderRef {
+            dormant_tx: dormant_transaction,
+            key,
+            order,
+        })
+    }
+
+    pub fn best_sell(&self) -> Option<OrderRef<'_, 'ob, P>> {
+        let (_, mut dormant_transaction) = DormantMutRef::new_shared(self);
+        let Some((key, order)) = dormant_transaction.reborrow().order_book.sells.pop_first() else {
+            return None;
+        };
+        Some(OrderRef {
+            dormant_tx: dormant_transaction,
+            key,
+            order,
+        })
+    }
+
+    pub fn get_order_mut(&self, key: impl Into<TimebasedKey>) -> Option<OrderRef<'_, 'ob, P>> {
+        let key = key.into().to_pricebased();
+        let (_, mut dormant_transaction) = DormantMutRef::new_shared(self);
+        if let Some(order) = dormant_transaction.reborrow().order_book.buys.remove(&key) {
+            return Some(OrderRef {
+                dormant_tx: dormant_transaction,
+                key,
+                order,
+            });
+        };
+        if let Some(order) = dormant_transaction.reborrow().order_book.sells.remove(&key) {
+            return Some(OrderRef {
+                dormant_tx: dormant_transaction,
+                key,
+                order,
+            });
+        };
+        None
+    }
+
+    fn run_matching(&mut self) {
+        let mut last_price = self.order_book.last_price;
+        {
+            let Some(mut buy_ref) = self.best_buy() else {
+                return;
+            };
+            let Some(mut sell_ref) = self.best_sell() else {
+                return;
+            };
+
+            loop {
+                if buy_ref.key.get_price() < sell_ref.key.get_price() {
+                    break;
+                }
+
+                let quantity = buy_ref.order.remaining.min(sell_ref.order.remaining);
+
+                buy_ref.order.remaining -= quantity;
+                sell_ref.order.remaining -= quantity;
+                if buy_ref.order.remaining == 0 {
+                    let Some(next_buy_ref) = self.best_buy() else {
+                        break;
+                    };
+                    buy_ref = next_buy_ref;
+                }
+
+                if sell_ref.order.remaining == 0 {
+                    let Some(next_sell_ref) = self.best_sell() else {
+                        break;
+                    };
+                    sell_ref = next_sell_ref;
+                }
+
+                last_price = buy_ref.key.get_price();
+            }
+        }
+
+        self.order_book.last_price = last_price;
+    }
+}
+
+pub struct OrderRef<'a, 'ob, P> {
+    dormant_tx: DormantMutRef<'a, Transaction<'ob, P>>,
+    pub key: PricebasedKey,
+    pub order: Order,
+}
+
+impl<'a, 'ob, P> OrderRef<'a, 'ob, P> {
+    pub fn cancel(mut self) {
+        self.order.set_status(OrderStatus::Cancelled);
+    }
+}
+
+impl<'a, 'ob, P> Drop for OrderRef<'a, 'ob, P> {
+    fn drop(&mut self) {
+        let cf = if self.order.side() == Side::Buy {
+            BUYS_CF
+        } else {
+            SELLS_CF
+        };
+
+        let transaction = self.dormant_tx.reborrow();
+        if self.order.status() == OrderStatus::Cancelled {
+            transaction.deletes.push((cf, self.key.to_bytes()));
+        } else if self.order.remaining == 0 {
+            self.order.set_status(OrderStatus::Filled);
+            transaction.deletes.push((cf, self.key.to_bytes()));
+        } else {
+            if self.order.remaining != self.order.quantity {
+                self.order.set_status(OrderStatus::PartiallyFilled);
+            }
+            transaction
+                .updates
+                .push((cf, self.key.to_bytes(), self.order));
+        }
+        transaction
+            .updates
+            .push((ALL_ORDERS_CF, self.key.to_bytes(), self.order));
+    }
 }
 
 impl<P> OrderBook<P>
@@ -36,39 +248,21 @@ where
     P: AsyncPersister<Order> + Clone,
     P: 'static + Send + Sync,
 {
+    fn begin_transaction<'a>(&'a mut self) -> Transaction<'a, P> {
+        Transaction::new(self)
+    }
+
     #[allow(dead_code)]
     pub fn add_order(
         &mut self,
         order: Order,
-    ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static + use<P> {
-        let mut updates = vec![];
-        let key: TimebasedKey = order.key.expect("key should be present").into();
-        if order.side() == Side::Buy {
-            self.buys.insert(key.to_pricebased(), order);
-            updates.push((BUYS_CF, key.to_pricebased().to_bytes(), order));
-            updates.push((ALL_ORDERS_CF, key.to_bytes(), order));
-        } else {
-            self.sells.insert(key.to_pricebased(), order);
-            updates.push((SELLS_CF, key.to_pricebased().to_bytes(), order));
-            updates.push((ALL_ORDERS_CF, key.to_bytes(), order));
-        }
-
-        let MatchingResult {
-            updates: updates2,
-            deletes,
-        } = self.run_matching();
-        updates.extend(updates2);
-
-        let persister = self.persister.clone();
+    ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static + use<'_, P> {
+        let mut transaction = self.begin_transaction();
+        transaction.add_order(order);
+        transaction.run_matching();
+        let fut = transaction.commit();
         async move {
-            persister
-                .save(updates, deletes)
-                .await
-                .inspect_err(|_| {
-                    tracing::error!("failed to insert add order log");
-                })
-                .map_err(|_| OrderBookError::AddOrder)?;
-            tracing::debug!("added order: {:?}", order);
+            fut.await.map_err(|_| OrderBookError::AddOrder)?;
             Ok(())
         }
     }
@@ -77,110 +271,17 @@ where
     pub fn cancel_order(
         &mut self,
         key: impl Into<TimebasedKey> + Copy + 'static,
-        side: Side,
+        _side: Side,
     ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static {
-        let removed = if side == Side::Buy {
-            self.buys.remove(&key.into().to_pricebased())
-        } else {
-            self.sells.remove(&key.into().to_pricebased())
+        let transaction = self.begin_transaction();
+        if let Some(order) = transaction.get_order_mut(key) {
+            order.cancel();
         };
-
-        let persister = self.persister.clone();
+        let fut = transaction.commit();
         async move {
-            let Some(mut order) = removed else {
-                return Ok(());
-            };
-            order.set_status(OrderStatus::Cancelled);
-            let updates = vec![(ALL_ORDERS_CF, key.into().to_bytes(), order)];
-            let cf = if side == Side::Buy { BUYS_CF } else { SELLS_CF };
-            let deletes = vec![(cf, key.into().to_pricebased().to_bytes())];
-
-            persister
-                .save(updates, deletes)
-                .await
-                .inspect_err(|_| {
-                    tracing::error!("failed to insert cancel order log");
-                })
-                .map_err(|_| OrderBookError::CancelOrder)?;
-            tracing::info!("cancelled order: {:?}", key.into());
-            tracing::debug!("cancelled order: {:?}", order);
+            fut.await.map_err(|_| OrderBookError::CancelOrder)?;
             Ok(())
         }
-    }
-
-    fn run_matching(&mut self) -> MatchingResult {
-        let mut updates = vec![];
-        let mut deletes = vec![];
-
-        let Some((mut buy_key, mut buy)) = self.buys.pop_last() else {
-            return MatchingResult { updates, deletes };
-        };
-        let Some((mut sell_key, mut sell)) = self.sells.pop_first() else {
-            self.buys.insert(buy_key, buy);
-            return MatchingResult { updates, deletes };
-        };
-
-        loop {
-            if buy_key.get_price() < sell_key.get_price() {
-                // println!(
-                //     "price mismatch, {} < {}",
-                //     buy_key.get_price(),
-                //     sell_key.get_price()
-                // );
-                self.buys.insert(buy_key, buy);
-                self.sells.insert(sell_key, sell);
-                break;
-            }
-            // println!(
-            //     "price matched, {} >= {}",
-            //     buy_key.get_price(),
-            //     sell_key.get_price()
-            // );
-            let quantity = buy.remaining.min(sell.remaining);
-
-            let buy_key_timebased: TimebasedKey = buy_key.into();
-            buy.remaining -= quantity;
-            sell.remaining -= quantity;
-            if buy.remaining == 0 {
-                buy.set_status(OrderStatus::Filled);
-                deletes.push((BUYS_CF, buy_key.to_bytes()));
-                updates.push((ALL_ORDERS_CF, buy_key_timebased.to_bytes(), buy));
-                let Some((next_buy_key, next_buy)) = self.buys.pop_last() else {
-                    break;
-                };
-                buy_key = next_buy_key;
-                buy = next_buy;
-            } else {
-                buy.set_status(OrderStatus::PartiallyFilled);
-                updates.push((ALL_ORDERS_CF, buy_key_timebased.to_bytes(), buy));
-            }
-
-            let sell_key_timebased: TimebasedKey = sell_key.into();
-            if sell.remaining == 0 {
-                sell.set_status(OrderStatus::Filled);
-                deletes.push((SELLS_CF, sell_key.to_bytes()));
-                updates.push((ALL_ORDERS_CF, sell_key_timebased.to_bytes(), sell));
-                let Some((next_sell_key, next_sell)) = self.sells.pop_first() else {
-                    break;
-                };
-                sell_key = next_sell_key;
-                sell = next_sell;
-            } else {
-                sell.set_status(OrderStatus::PartiallyFilled);
-                updates.push((ALL_ORDERS_CF, sell_key_timebased.to_bytes(), sell));
-            }
-
-            self.last_price = buy_key.get_price();
-        }
-
-        if buy.remaining > 0 {
-            self.buys.insert(buy_key, buy);
-        }
-        if sell.remaining > 0 {
-            self.sells.insert(sell_key, sell);
-        }
-
-        MatchingResult { updates, deletes }
     }
 
     fn load(&mut self) -> Result<(), P::Error> {
