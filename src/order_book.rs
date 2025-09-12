@@ -102,7 +102,7 @@ impl<'ob, P> Transaction<'ob, P> {
         }
     }
 
-    pub fn commit(self) -> impl Future<Output = Result<(), P::Error>> + 'static
+    pub fn commit(self) -> impl Future<Output = Result<(), P::Error>> + 'static + use<P>
     where
         P: AsyncPersister<Order> + Clone,
         P: 'static + Send + Sync,
@@ -256,7 +256,7 @@ where
     pub fn add_order(
         &mut self,
         order: Order,
-    ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static + use<'_, P> {
+    ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static + use<P> {
         let mut transaction = self.begin_transaction();
         transaction.add_order(order);
         transaction.run_matching();
