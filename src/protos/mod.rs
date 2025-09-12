@@ -20,9 +20,9 @@ impl Ord for Key {
     }
 }
 
-impl From<OrderKey> for Key {
-    fn from(key: OrderKey) -> Self {
-        let bytes = key.timebased_bytes();
+impl From<TimebasedKey> for Key {
+    fn from(key: TimebasedKey) -> Self {
+        let bytes = key.to_bytes();
         let mut high_bytes = [0; 8];
         high_bytes.copy_from_slice(&bytes[0..8]);
         let high = u64::from_le_bytes(high_bytes);
@@ -33,13 +33,13 @@ impl From<OrderKey> for Key {
     }
 }
 
-impl From<Key> for OrderKey {
+impl From<Key> for TimebasedKey {
     fn from(key: Key) -> Self {
         let mut bytes = [0; 16];
         bytes[0..8].copy_from_slice(&key.high.to_le_bytes());
         bytes[8..16].copy_from_slice(&key.low.to_le_bytes());
 
-        OrderKey::from_timebased(bytes)
+        TimebasedKey::from_bytes(bytes)
     }
 }
 
@@ -121,10 +121,16 @@ impl Arbitrary for OrderStatus {
     }
 }
 
-impl Arbitrary for OrderKey {
+impl Arbitrary for TimebasedKey {
     fn arbitrary(g: &mut Gen) -> Self {
         let price = gaussian(g, 100.0, 100.0);
         Self::new(price)
+    }
+}
+
+impl Arbitrary for Key {
+    fn arbitrary(g: &mut Gen) -> Self {
+        TimebasedKey::arbitrary(g).into()
     }
 }
 
@@ -134,7 +140,7 @@ impl Arbitrary for Order {
         quantity = quantity.max(1).min(1000000);
 
         Order {
-            key: Some(OrderKey::arbitrary(g).into()),
+            key: Some(Key::arbitrary(g)),
             side: Side::arbitrary(g).into(),
             order_type: OrderType::arbitrary(g).into(),
             quantity,

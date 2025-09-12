@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, error::Error, time::Instant};
 
 use crate::{
     persister::AsyncPersister,
-    protos::{Order, OrderKey, OrderStatus, PricebasedKey, Side, TimebasedKey},
+    protos::{Order, OrderStatus, PricebasedKey, Side, TimebasedKey},
 };
 
 pub const BUYS_CF: &str = "buys";
@@ -42,15 +42,15 @@ where
         order: Order,
     ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static + use<P> {
         let mut updates = vec![];
-        let key: OrderKey = order.key.expect("key should be present").into();
+        let key: TimebasedKey = order.key.expect("key should be present").into();
         if order.side() == Side::Buy {
-            self.buys.insert(key.pricebased(), order);
-            updates.push((BUYS_CF, key.pricebased_bytes(), order));
-            updates.push((ALL_ORDERS_CF, key.timebased_bytes(), order));
+            self.buys.insert(key.to_pricebased(), order);
+            updates.push((BUYS_CF, key.to_pricebased().to_bytes(), order));
+            updates.push((ALL_ORDERS_CF, key.to_bytes(), order));
         } else {
-            self.sells.insert(key.pricebased(), order);
-            updates.push((SELLS_CF, key.pricebased_bytes(), order));
-            updates.push((ALL_ORDERS_CF, key.timebased_bytes(), order));
+            self.sells.insert(key.to_pricebased(), order);
+            updates.push((SELLS_CF, key.to_pricebased().to_bytes(), order));
+            updates.push((ALL_ORDERS_CF, key.to_bytes(), order));
         }
 
         let MatchingResult {
@@ -76,13 +76,13 @@ where
     #[allow(dead_code)]
     pub fn cancel_order(
         &mut self,
-        key: OrderKey,
+        key: impl Into<TimebasedKey> + Copy + 'static,
         side: Side,
     ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static {
         let removed = if side == Side::Buy {
-            self.buys.remove(&key.pricebased())
+            self.buys.remove(&key.into().to_pricebased())
         } else {
-            self.sells.remove(&key.pricebased())
+            self.sells.remove(&key.into().to_pricebased())
         };
 
         let persister = self.persister.clone();
@@ -91,9 +91,9 @@ where
                 return Ok(());
             };
             order.set_status(OrderStatus::Cancelled);
-            let updates = vec![(ALL_ORDERS_CF, key.timebased_bytes(), order)];
+            let updates = vec![(ALL_ORDERS_CF, key.into().to_bytes(), order)];
             let cf = if side == Side::Buy { BUYS_CF } else { SELLS_CF };
-            let deletes = vec![(cf, key.pricebased_bytes())];
+            let deletes = vec![(cf, key.into().to_pricebased().to_bytes())];
 
             persister
                 .save(updates, deletes)
@@ -102,7 +102,7 @@ where
                     tracing::error!("failed to insert cancel order log");
                 })
                 .map_err(|_| OrderBookError::CancelOrder)?;
-            tracing::info!("cancelled order: {:?}", key);
+            tracing::info!("cancelled order: {:?}", key.into());
             tracing::debug!("cancelled order: {:?}", order);
             Ok(())
         }
@@ -215,9 +215,9 @@ where
     }
 
     #[allow(dead_code)]
-    pub async fn get_order(&self, key: OrderKey) -> Result<Option<Order>, P::Error> {
+    pub async fn get_order(&self, key: impl Into<TimebasedKey>) -> Result<Option<Order>, P::Error> {
         self.persister
-            .load(ALL_ORDERS_CF, key.timebased_bytes())
+            .load(ALL_ORDERS_CF, key.into().to_bytes())
             .await
     }
 }
