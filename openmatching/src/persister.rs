@@ -71,6 +71,7 @@ impl<T: Persister + Send + Sync + 'static> Asyncify<T> {
             let start = std::time::Instant::now();
             let mut last_second = 0;
             let mut count = 0;
+            let mut total_count = 0;
             while let Some(command) = rx.blocking_recv() {
                 match command {
                     Command::Close => break,
@@ -85,11 +86,16 @@ impl<T: Persister + Send + Sync + 'static> Asyncify<T> {
                         }
                         let elapsed = start.elapsed().as_secs();
                         if elapsed != last_second {
-                            tracing::info!("tps: {}", count);
+                            tracing::info!(
+                                "current tps: {}, total tps: {}",
+                                count,
+                                total_count / elapsed as usize
+                            );
                             last_second = elapsed;
                             count = 0;
                         }
                         count += len;
+                        total_count += len;
                     }
                     Command::Get { reply, key } => {
                         let res = persister.get_order(key);
