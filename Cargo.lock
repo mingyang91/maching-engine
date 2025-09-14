@@ -1072,6 +1072,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "openmatching-persister-rocksdb"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "quickcheck",
+ "quickcheck_macros",
+ "rocksdb",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
