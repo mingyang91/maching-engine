@@ -7,7 +7,7 @@ use std::{
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::protos::{Order, TimebasedKey};
+use crate::protos::{Order, OrderStatus, TimebasedKey};
 
 pub trait Persister: Send + Sync + 'static {
     type Error: Error + Debug + Send + Sync + 'static;
@@ -68,14 +68,28 @@ impl<T: Persister + Send + Sync + 'static> Asyncify<T> {
     pub fn new(persister: T) -> Self {
         let (tx, mut rx) = mpsc::channel(65535);
         let handle = thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let mut last_second = 0;
+            let mut count = 0;
             while let Some(command) = rx.blocking_recv() {
                 match command {
                     Command::Close => break,
                     Command::Upsert { reply, orders } => {
+                        let len = orders
+                            .iter()
+                            .filter(|o| o.status() == OrderStatus::Filled)
+                            .count();
                         let res = persister.upsert_order(orders);
                         if reply.send(res).is_err() {
                             tracing::warn!("failed to send upsert reply");
                         }
+                        let elapsed = start.elapsed().as_secs();
+                        if elapsed != last_second {
+                            tracing::info!("tps: {}", count);
+                            last_second = elapsed;
+                            count = 0;
+                        }
+                        count += len;
                     }
                     Command::Get { reply, key } => {
                         let res = persister.get_order(key);
