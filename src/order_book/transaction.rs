@@ -1,30 +1,10 @@
-use std::{collections::BTreeMap, error::Error, marker::PhantomData, ptr::NonNull, time::Instant};
+use super::*;
 
 use crate::{
+    borrow::DormantMutRef,
     persister::AsyncPersister,
     protos::{Order, OrderStatus, PricebasedKey, Side, TimebasedKey},
 };
-
-pub const BUYS_CF: &str = "buys";
-pub const SELLS_CF: &str = "sells";
-pub const ALL_ORDERS_CF: &str = "all_orders";
-
-pub struct OrderBook<P> {
-    pub last_price: f32,
-    pub buys: BTreeMap<PricebasedKey, Order>,
-    pub sells: BTreeMap<PricebasedKey, Order>,
-    pub persister: P,
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum OrderBookError<T: Error> {
-    #[error("persister error")]
-    Persister(#[from] T),
-    #[error("failed to add order")]
-    AddOrder,
-    #[error("failed to cancel order")]
-    CancelOrder,
-}
 
 pub struct Transaction<'ob, P> {
     pub order_book: &'ob mut OrderBook<P>,
@@ -32,54 +12,8 @@ pub struct Transaction<'ob, P> {
     pub deletes: Vec<(&'static str, [u8; 16])>,
 }
 
-struct DormantMutRef<'a, T> {
-    ptr: NonNull<T>,
-    _marker: PhantomData<&'a T>,
-}
-
-impl<'a, T> DormantMutRef<'a, T> {
-    #[allow(dead_code)]
-    pub fn new(t: &'a mut T) -> (&'a mut T, Self) {
-        let ptr = NonNull::from(t);
-        let new_ref = unsafe { &mut *ptr.as_ptr() };
-        (
-            new_ref,
-            Self {
-                ptr,
-                _marker: PhantomData,
-            },
-        )
-    }
-
-    pub fn new_shared(t: &'a T) -> (&'a T, Self) {
-        let ptr = NonNull::from(t);
-        let new_ref = unsafe { &*ptr.as_ptr() };
-        (
-            new_ref,
-            Self {
-                ptr,
-                _marker: PhantomData,
-            },
-        )
-    }
-
-    #[allow(dead_code)]
-    pub fn awaken(self) -> &'a mut T {
-        unsafe { &mut *self.ptr.as_ptr() }
-    }
-
-    pub fn reborrow(&mut self) -> &'a mut T {
-        unsafe { &mut *self.ptr.as_ptr() }
-    }
-
-    #[allow(dead_code)]
-    pub fn reborrow_shared(&self) -> &'a T {
-        unsafe { &*self.ptr.as_ptr() }
-    }
-}
-
 impl<'ob, P> Transaction<'ob, P> {
-    pub fn new(order_book: &'ob mut OrderBook<P>) -> Self {
+    pub(super) fn new(order_book: &'ob mut OrderBook<P>) -> Self {
         Self {
             order_book,
             updates: vec![],
@@ -87,7 +21,7 @@ impl<'ob, P> Transaction<'ob, P> {
         }
     }
 
-    pub fn add_order(&mut self, order: Order) {
+    pub(super) fn add_order(&mut self, order: Order) {
         let key: TimebasedKey = order.key.expect("key should be present").into();
         if order.side() == Side::Buy {
             self.order_book.buys.insert(key.to_pricebased(), order);
@@ -102,7 +36,7 @@ impl<'ob, P> Transaction<'ob, P> {
         }
     }
 
-    pub fn commit(self) -> impl Future<Output = Result<(), P::Error>> + 'static + use<P>
+    pub(super) fn commit(self) -> impl Future<Output = Result<(), P::Error>> + 'static + use<P>
     where
         P: AsyncPersister<Order> + Clone,
         P: 'static + Send + Sync,
@@ -118,7 +52,7 @@ impl<'ob, P> Transaction<'ob, P> {
         }
     }
 
-    pub fn best_buy(&self) -> Option<OrderRef<'_, 'ob, P>> {
+    pub(super) fn best_buy(&self) -> Option<OrderRef<'_, 'ob, P>> {
         let (_, mut dormant_transaction) = DormantMutRef::new_shared(self);
         let Some((key, order)) = dormant_transaction.reborrow().order_book.buys.pop_last() else {
             return None;
@@ -130,7 +64,7 @@ impl<'ob, P> Transaction<'ob, P> {
         })
     }
 
-    pub fn best_sell(&self) -> Option<OrderRef<'_, 'ob, P>> {
+    pub(super) fn best_sell(&self) -> Option<OrderRef<'_, 'ob, P>> {
         let (_, mut dormant_transaction) = DormantMutRef::new_shared(self);
         let Some((key, order)) = dormant_transaction.reborrow().order_book.sells.pop_first() else {
             return None;
@@ -142,7 +76,10 @@ impl<'ob, P> Transaction<'ob, P> {
         })
     }
 
-    pub fn get_order_mut(&self, key: impl Into<TimebasedKey>) -> Option<OrderRef<'_, 'ob, P>> {
+    pub(super) fn get_order_mut(
+        &self,
+        key: impl Into<TimebasedKey>,
+    ) -> Option<OrderRef<'_, 'ob, P>> {
         let key = key.into().to_pricebased();
         let (_, mut dormant_transaction) = DormantMutRef::new_shared(self);
         if let Some(order) = dormant_transaction.reborrow().order_book.buys.remove(&key) {
@@ -162,7 +99,7 @@ impl<'ob, P> Transaction<'ob, P> {
         None
     }
 
-    fn run_matching(&mut self) {
+    pub(super) fn run_matching(&mut self) {
         let mut last_price = self.order_book.last_price;
         {
             let Some(mut buy_ref) = self.best_buy() else {
@@ -240,85 +177,5 @@ impl<'a, 'ob, P> Drop for OrderRef<'a, 'ob, P> {
         transaction
             .updates
             .push((ALL_ORDERS_CF, self.key.to_bytes(), self.order));
-    }
-}
-
-impl<P> OrderBook<P>
-where
-    P: AsyncPersister<Order> + Clone,
-    P: 'static + Send + Sync,
-{
-    fn begin_transaction<'a>(&'a mut self) -> Transaction<'a, P> {
-        Transaction::new(self)
-    }
-
-    #[allow(dead_code)]
-    pub fn add_order(
-        &mut self,
-        order: Order,
-    ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static + use<P> {
-        let mut transaction = self.begin_transaction();
-        transaction.add_order(order);
-        transaction.run_matching();
-        let fut = transaction.commit();
-        async move {
-            fut.await.map_err(|_| OrderBookError::AddOrder)?;
-            Ok(())
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn cancel_order(
-        &mut self,
-        key: impl Into<TimebasedKey> + Copy + 'static,
-        _side: Side,
-    ) -> impl Future<Output = Result<(), OrderBookError<P::Error>>> + 'static {
-        let transaction = self.begin_transaction();
-        if let Some(order) = transaction.get_order_mut(key) {
-            order.cancel();
-        };
-        let fut = transaction.commit();
-        async move {
-            fut.await.map_err(|_| OrderBookError::CancelOrder)?;
-            Ok(())
-        }
-    }
-
-    fn load(&mut self) -> Result<(), P::Error> {
-        let now = Instant::now();
-        let buys = self.persister.load_all_iter(BUYS_CF)?;
-        for result in buys {
-            let (key, order) = result?;
-            self.buys.insert(PricebasedKey::from_bytes(key), order);
-        }
-        tracing::info!("load {} buys in {:?}", self.buys.len(), now.elapsed());
-
-        let now = Instant::now();
-        let sells = self.persister.load_all_iter(SELLS_CF)?;
-        for result in sells {
-            let (key, order) = result?;
-            self.sells.insert(PricebasedKey::from_bytes(key), order);
-        }
-        tracing::info!("load {} sells in {:?}", self.sells.len(), now.elapsed());
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn create(persister: P) -> Result<Self, P::Error> {
-        let mut order_book = Self {
-            last_price: 0.0,
-            buys: BTreeMap::new(),
-            sells: BTreeMap::new(),
-            persister,
-        };
-        order_book.load()?;
-        Ok(order_book)
-    }
-
-    #[allow(dead_code)]
-    pub async fn get_order(&self, key: impl Into<TimebasedKey>) -> Result<Option<Order>, P::Error> {
-        self.persister
-            .load(ALL_ORDERS_CF, key.into().to_bytes())
-            .await
     }
 }

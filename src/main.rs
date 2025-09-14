@@ -1,6 +1,7 @@
 #![deny(warnings)]
 #![deny(clippy::unwrap_used)]
 
+mod borrow;
 mod order_book;
 mod persister;
 mod protos;
