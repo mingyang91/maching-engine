@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use openmatching::{order_book::OrderBook, protos::Order};
-use openmatching_persister_rocksdb::{new_persister::{AsyncRocksdbPersister, RocksdbPersister}};
+use openmatching_persister_rocksdb::{AsyncRocksdbPersister, RocksdbPersister};
 
 use std::time::Instant;
 
