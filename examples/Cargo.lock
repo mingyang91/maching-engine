@@ -67,6 +67,7 @@ name = "bench-rocksdb"
 version = "0.1.0"
 dependencies = [
  "openmatching",
+ "openmatching-persister-rocksdb",
  "quickcheck",
  "quickcheck_macros",
  "tokio",
@@ -483,6 +484,24 @@ name = "openmatching"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "quickcheck",
+ "rocksdb",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "openmatching-persister-rocksdb"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "openmatching",
  "prost",
  "prost-build",
  "prost-types",

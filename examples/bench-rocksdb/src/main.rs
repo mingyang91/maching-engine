@@ -2,13 +2,34 @@
 #![deny(clippy::unwrap_used)]
 #![allow(dead_code)]
 
-use openmatching::{Server, protos::Order};
+use openmatching::{order_book::OrderBook, protos::Order};
+use openmatching_persister_rocksdb::Database;
 
 use std::time::Instant;
 
 use tokio::{join, spawn, sync::mpsc::channel};
 
 use quickcheck::{Arbitrary, Gen};
+
+
+pub struct Server {
+    pub order_book: OrderBook<Database<Order>>,
+}
+
+impl Server {
+    pub fn new() -> Self {
+        let database = Database::new("data/order_book").expect("failed to create database");
+        let order_book = OrderBook::create(database).expect("failed to create order book");
+        Self { order_book }
+    }
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 
 #[tokio::main]
 async fn main() {

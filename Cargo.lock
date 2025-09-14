@@ -1067,6 +1067,7 @@ dependencies = [
 name = "openmatching-persister-pg"
 version = "0.1.0"
 dependencies = [
+ "openmatching",
  "sqlx",
  "tokio",
 ]
@@ -1076,6 +1077,7 @@ name = "openmatching-persister-rocksdb"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "openmatching",
  "prost",
  "prost-build",
  "prost-types",

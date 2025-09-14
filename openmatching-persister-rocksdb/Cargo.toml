@@ -18,6 +18,7 @@ tracing = "0.1"
 uuid = { version = "1.18", features = ["v6", "std", "rng"] }
 quickcheck = "1"
 tracing-subscriber = "0.3"
+openmatching = { path = "../openmatching", version = "0.1.0" }
 
 [dev-dependencies]
 quickcheck_macros = "1"

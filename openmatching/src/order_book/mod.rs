@@ -89,8 +89,7 @@ where
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn create(persister: P) -> Result<Self, P::Error> {
+    pub fn create(persister: P) -> Result<Self, P::Error> {
         let mut order_book = Self {
             last_price: 0.0,
             buys: BTreeMap::new(),
