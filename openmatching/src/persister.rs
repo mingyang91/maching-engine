@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fmt::Debug,
-    sync::{Arc, Mutex},
+    sync::Arc,
     thread::{self, JoinHandle},
 };
 
@@ -54,10 +54,14 @@ enum Command<T: Persister + 'static> {
     Close,
 }
 
+struct AsyncifyInner<T: Persister + Send + Sync + 'static> {
+    tx: mpsc::Sender<Command<T>>,
+    handle: Option<JoinHandle<()>>,
+}
+
 #[derive(Clone)]
 pub struct Asyncify<T: Persister + Send + Sync + 'static> {
-    tx: mpsc::Sender<Command<T>>,
-    handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    inner: Arc<AsyncifyInner<T>>,
 }
 
 impl<T: Persister + Send + Sync + 'static> Asyncify<T> {
@@ -96,21 +100,19 @@ impl<T: Persister + Send + Sync + 'static> Asyncify<T> {
         });
 
         Self {
-            tx,
-            handle: Arc::new(Mutex::new(Some(handle))),
+            inner: Arc::new(AsyncifyInner {
+                tx,
+                handle: Some(handle),
+            }),
         }
     }
 }
 
-impl<T: Persister + Send + Sync + 'static> Drop for Asyncify<T> {
+impl<T: Persister + Send + Sync + 'static> Drop for AsyncifyInner<T> {
     fn drop(&mut self) {
-        while let Err(e) = self.tx.try_send(Command::Close) {
-            tracing::warn!("failed to send command: {:?}", e);
-        }
+        while self.tx.try_send(Command::Close).is_err() {}
 
         self.handle
-            .lock()
-            .expect("failed to lock handle")
             .take()
             .expect("handle should be present")
             .join()
@@ -118,20 +120,30 @@ impl<T: Persister + Send + Sync + 'static> Drop for Asyncify<T> {
     }
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum AsyncPersisterError<E> {
+    #[error("persister error")]
+    Persister(#[from] E),
+    #[error("channel closed")]
+    ChannelClosed,
+}
+
 impl<T: Persister + 'static> AsyncPersister for Asyncify<T> {
-    type Error = T::Error;
+    type Error = AsyncPersisterError<T::Error>;
 
     fn upsert_order(
         &self,
         orders: Vec<Order>,
     ) -> impl Future<Output = Result<(), Self::Error>> + 'static {
-        let tx = self.tx.clone();
+        let tx = self.inner.tx.clone();
         async move {
             let (reply, rx) = oneshot::channel();
             tx.send(Command::Upsert { reply, orders })
                 .await
-                .expect("failed to send command");
-            rx.await.expect("failed to receive reply")
+                .map_err(|_| Self::Error::ChannelClosed)?;
+            rx.await
+                .map_err(|_| Self::Error::ChannelClosed)?
+                .map_err(Self::Error::Persister)
         }
     }
 
@@ -139,39 +151,45 @@ impl<T: Persister + 'static> AsyncPersister for Asyncify<T> {
         &self,
         key: TimebasedKey,
     ) -> impl Future<Output = Result<Option<Order>, Self::Error>> + 'static {
-        let tx = self.tx.clone();
+        let tx = self.inner.tx.clone();
         async move {
             let (reply, rx) = oneshot::channel();
             tx.send(Command::Get { reply, key })
                 .await
-                .expect("failed to send command");
-            rx.await.expect("failed to receive reply")
+                .map_err(|_| Self::Error::ChannelClosed)?;
+            rx.await
+                .map_err(|_| Self::Error::ChannelClosed)?
+                .map_err(Self::Error::Persister)
         }
     }
 
     fn get_all_buy_orders(
         &self,
     ) -> impl Future<Output = Result<Vec<Order>, Self::Error>> + 'static {
-        let tx = self.tx.clone();
+        let tx = self.inner.tx.clone();
         async move {
             let (reply, rx) = oneshot::channel();
             tx.send(Command::GetAllBuyOrders { reply })
                 .await
-                .expect("failed to send command");
-            rx.await.expect("failed to receive reply")
+                .map_err(|_| Self::Error::ChannelClosed)?;
+            rx.await
+                .map_err(|_| Self::Error::ChannelClosed)?
+                .map_err(Self::Error::Persister)
         }
     }
 
     fn get_all_sell_orders(
         &self,
     ) -> impl Future<Output = Result<Vec<Order>, Self::Error>> + 'static {
-        let tx = self.tx.clone();
+        let tx = self.inner.tx.clone();
         async move {
             let (reply, rx) = oneshot::channel();
             tx.send(Command::GetAllSellOrders { reply })
                 .await
-                .expect("failed to send command");
-            rx.await.expect("failed to receive reply")
+                .map_err(|_| Self::Error::ChannelClosed)?;
+            rx.await
+                .map_err(|_| Self::Error::ChannelClosed)?
+                .map_err(Self::Error::Persister)
         }
     }
 }

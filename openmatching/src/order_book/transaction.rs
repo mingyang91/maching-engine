@@ -37,8 +37,8 @@ impl<'ob, P> Transaction<'ob, P> {
         let p = self.order_book.persister.clone();
         let updates = self.updates;
         async move {
-            p.upsert_order(updates).await.inspect_err(|_| {
-                tracing::error!("failed to upsert orders");
+            p.upsert_order(updates).await.inspect_err(|e| {
+                tracing::error!("failed to upsert orders: {e:?}");
             })?;
             Ok(())
         }
