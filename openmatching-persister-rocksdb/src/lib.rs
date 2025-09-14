@@ -266,13 +266,10 @@ where
                 DB::open_cf(&options, path, &cfs).expect("failed to create db with cfs")
             }
         };
-        let (tx, mut rx): (
-            mpsc::Sender<Command<[u8; 16], V, PersisterError<rocksdb::Error>>>,
-            mpsc::Receiver<Command<[u8; 16], V, PersisterError<rocksdb::Error>>>,
-        ) = mpsc::channel(u16::MAX as usize);
+        let (tx, mut rx) = mpsc::channel(u16::MAX as usize);
 
         let placeholder = Mutex::new(None);
-        let inner = Arc::new(Inner {
+        let inner = Arc::new(Inner::<V> {
             db,
             tx,
             handle: placeholder,

@@ -54,9 +54,7 @@ impl<'ob, P> Transaction<'ob, P> {
 
     pub(super) fn best_buy(&self) -> Option<OrderRef<'_, 'ob, P>> {
         let (_, mut dormant_transaction) = DormantMutRef::new_shared(self);
-        let Some((key, order)) = dormant_transaction.reborrow().order_book.buys.pop_last() else {
-            return None;
-        };
+        let (key, order) = dormant_transaction.reborrow().order_book.buys.pop_last()?;
         Some(OrderRef {
             dormant_tx: dormant_transaction,
             key,
@@ -66,9 +64,11 @@ impl<'ob, P> Transaction<'ob, P> {
 
     pub(super) fn best_sell(&self) -> Option<OrderRef<'_, 'ob, P>> {
         let (_, mut dormant_transaction) = DormantMutRef::new_shared(self);
-        let Some((key, order)) = dormant_transaction.reborrow().order_book.sells.pop_first() else {
-            return None;
-        };
+        let (key, order) = dormant_transaction
+            .reborrow()
+            .order_book
+            .sells
+            .pop_first()?;
         Some(OrderRef {
             dormant_tx: dormant_transaction,
             key,

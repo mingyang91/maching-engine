@@ -137,7 +137,7 @@ impl Arbitrary for Key {
 impl Arbitrary for Order {
     fn arbitrary(g: &mut Gen) -> Self {
         let mut quantity = log_gaussian(g, 100.0, 2.48).ceil() as u64;
-        quantity = quantity.max(1).min(1000000);
+        quantity = quantity.clamp(1, 1000000);
 
         Order {
             key: Some(Key::arbitrary(g)),
