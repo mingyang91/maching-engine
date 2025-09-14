@@ -2,7 +2,7 @@ use super::*;
 
 use crate::{
     borrow::DormantMutRef,
-    new_persister::AsyncPersister,
+    persister::AsyncPersister,
     protos::{Order, OrderStatus, PricebasedKey, Side, TimebasedKey},
 };
 

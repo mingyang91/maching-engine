@@ -3,7 +3,7 @@ mod transaction;
 use std::{collections::BTreeMap, error::Error, time::Instant};
 
 use crate::{
-    new_persister::AsyncPersister,
+    persister::AsyncPersister,
     order_book::transaction::Transaction,
     protos::{Order, PricebasedKey, Side, TimebasedKey},
 };
