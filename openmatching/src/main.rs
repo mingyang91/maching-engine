@@ -6,7 +6,7 @@ mod order_book;
 mod persister;
 mod protos;
 
-use matching_engine::Server;
+use openmatching::Server;
 
 #[tokio::main]
 async fn main() {

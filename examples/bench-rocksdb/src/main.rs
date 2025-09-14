@@ -2,7 +2,7 @@
 #![deny(clippy::unwrap_used)]
 #![allow(dead_code)]
 
-use matching_engine::{Server, protos::Order};
+use openmatching::{Server, protos::Order};
 
 use std::time::Instant;
 
