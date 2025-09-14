@@ -2,14 +2,13 @@ use super::*;
 
 use crate::{
     borrow::DormantMutRef,
-    persister::AsyncPersister,
+    new_persister::AsyncPersister,
     protos::{Order, OrderStatus, PricebasedKey, Side, TimebasedKey},
 };
 
 pub struct Transaction<'ob, P> {
     pub order_book: &'ob mut OrderBook<P>,
-    pub updates: Vec<(&'static str, [u8; 16], Order)>,
-    pub deletes: Vec<(&'static str, [u8; 16])>,
+    pub updates: Vec<Order>,
 }
 
 impl<'ob, P> Transaction<'ob, P> {
@@ -17,7 +16,6 @@ impl<'ob, P> Transaction<'ob, P> {
         Self {
             order_book,
             updates: vec![],
-            deletes: vec![],
         }
     }
 
@@ -25,28 +23,22 @@ impl<'ob, P> Transaction<'ob, P> {
         let key: TimebasedKey = order.key.expect("key should be present").into();
         if order.side() == Side::Buy {
             self.order_book.buys.insert(key.to_pricebased(), order);
-            self.updates
-                .push((BUYS_CF, key.to_pricebased().to_bytes(), order));
-            self.updates.push((ALL_ORDERS_CF, key.to_bytes(), order));
         } else {
             self.order_book.sells.insert(key.to_pricebased(), order);
-            self.updates
-                .push((SELLS_CF, key.to_pricebased().to_bytes(), order));
-            self.updates.push((ALL_ORDERS_CF, key.to_bytes(), order));
         }
+        self.updates.push(order);
     }
 
     pub(super) fn commit(self) -> impl Future<Output = Result<(), P::Error>> + 'static + use<P>
     where
-        P: AsyncPersister<Order> + Clone,
+        P: AsyncPersister + Clone,
         P: 'static + Send + Sync,
     {
         let p = self.order_book.persister.clone();
         let updates = self.updates;
-        let deletes = self.deletes;
         async move {
-            p.save(updates, deletes).await.inspect_err(|_| {
-                tracing::error!("failed to insert transaction log");
+            p.upsert_order(updates).await.inspect_err(|_| {
+                tracing::error!("failed to upsert orders");
             })?;
             Ok(())
         }
@@ -154,28 +146,12 @@ impl<'a, 'ob, P> OrderRef<'a, 'ob, P> {
 
 impl<'a, 'ob, P> Drop for OrderRef<'a, 'ob, P> {
     fn drop(&mut self) {
-        let cf = if self.order.side() == Side::Buy {
-            BUYS_CF
-        } else {
-            SELLS_CF
-        };
-
         let transaction = self.dormant_tx.reborrow();
-        if self.order.status() == OrderStatus::Cancelled {
-            transaction.deletes.push((cf, self.key.to_bytes()));
-        } else if self.order.remaining == 0 {
+        if self.order.remaining == 0 {
             self.order.set_status(OrderStatus::Filled);
-            transaction.deletes.push((cf, self.key.to_bytes()));
-        } else {
-            if self.order.remaining != self.order.quantity {
-                self.order.set_status(OrderStatus::PartiallyFilled);
-            }
-            transaction
-                .updates
-                .push((cf, self.key.to_bytes(), self.order));
+        } else if self.order.remaining != self.order.quantity {
+            self.order.set_status(OrderStatus::PartiallyFilled);
         }
-        transaction
-            .updates
-            .push((ALL_ORDERS_CF, self.key.to_bytes(), self.order));
+        transaction.updates.push(self.order);
     }
 }

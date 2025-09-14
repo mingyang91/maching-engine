@@ -3,8 +3,8 @@ mod transaction;
 use std::{collections::BTreeMap, error::Error, time::Instant};
 
 use crate::{
+    new_persister::AsyncPersister,
     order_book::transaction::Transaction,
-    persister::AsyncPersister,
     protos::{Order, PricebasedKey, Side, TimebasedKey},
 };
 
@@ -31,7 +31,7 @@ pub enum OrderBookError<T: Error> {
 
 impl<P> OrderBook<P>
 where
-    P: AsyncPersister<Order> + Clone,
+    P: AsyncPersister + Clone,
     P: 'static + Send + Sync,
 {
     fn begin_transaction<'a>(&'a mut self) -> Transaction<'a, P> {
@@ -70,40 +70,38 @@ where
         }
     }
 
-    fn load(&mut self) -> Result<(), P::Error> {
+    async fn load(&mut self) -> Result<(), P::Error> {
         let now = Instant::now();
-        let buys = self.persister.load_all_iter(BUYS_CF)?;
-        for result in buys {
-            let (key, order) = result?;
-            self.buys.insert(PricebasedKey::from_bytes(key), order);
+        let buys = self.persister.get_all_buy_orders().await?;
+        for order in buys {
+            let key: TimebasedKey = order.key.expect("key should be present").into();
+            self.buys.insert(key.to_pricebased(), order);
         }
         tracing::info!("load {} buys in {:?}", self.buys.len(), now.elapsed());
 
         let now = Instant::now();
-        let sells = self.persister.load_all_iter(SELLS_CF)?;
-        for result in sells {
-            let (key, order) = result?;
-            self.sells.insert(PricebasedKey::from_bytes(key), order);
+        let sells = self.persister.get_all_sell_orders().await?;
+        for order in sells {
+            let key: TimebasedKey = order.key.expect("key should be present").into();
+            self.sells.insert(key.to_pricebased(), order);
         }
         tracing::info!("load {} sells in {:?}", self.sells.len(), now.elapsed());
         Ok(())
     }
 
-    pub fn create(persister: P) -> Result<Self, P::Error> {
+    pub async fn create(persister: P) -> Result<Self, P::Error> {
         let mut order_book = Self {
             last_price: 0.0,
             buys: BTreeMap::new(),
             sells: BTreeMap::new(),
             persister,
         };
-        order_book.load()?;
+        order_book.load().await?;
         Ok(order_book)
     }
 
     #[allow(dead_code)]
     pub async fn get_order(&self, key: impl Into<TimebasedKey>) -> Result<Option<Order>, P::Error> {
-        self.persister
-            .load(ALL_ORDERS_CF, key.into().to_bytes())
-            .await
+        self.persister.get_order(key.into()).await
     }
 }

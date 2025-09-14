@@ -1,3 +1,4 @@
+pub mod new_persister;
 use std::{
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},

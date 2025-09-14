@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use openmatching::{order_book::OrderBook, protos::Order};
-use openmatching_persister_rocksdb::Database;
+use openmatching_persister_rocksdb::{new_persister::{AsyncRocksdbPersister, RocksdbPersister}};
 
 use std::time::Instant;
 
@@ -13,20 +13,14 @@ use quickcheck::{Arbitrary, Gen};
 
 
 pub struct Server {
-    pub order_book: OrderBook<Database<Order>>,
+    pub order_book: OrderBook<AsyncRocksdbPersister>,
 }
 
 impl Server {
-    pub fn new() -> Self {
-        let database = Database::new("data/order_book").expect("failed to create database");
-        let order_book = OrderBook::create(database).expect("failed to create order book");
+    pub async fn new() -> Self {
+        let database = RocksdbPersister::new_async("data/order_book");
+        let order_book = OrderBook::create(database).await.expect("failed to create order book");
         Self { order_book }
-    }
-}
-
-impl Default for Server {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -62,7 +56,7 @@ async fn main() {
     });
 
     let order_book_handle = spawn(async move {
-        let mut server = Server::new();
+        let mut server = Server::new().await;
         tracing::info!("server started");
         while let Some(orders) = receiver.recv().await {
             let mut futs = vec![];
