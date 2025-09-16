@@ -16,3 +16,6 @@ sqlx = { version = "0.8", features = [
     "chrono",
 ] }
 openmatching = { path = "../openmatching", version = "0.1.0" }
+thiserror = "2"
+uuid = "1"
+tracing = "0.1"

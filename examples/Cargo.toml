@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["bench-rocksdb"]
+members = ["bench-rocksdb", "bench-pg"]
 
 [workspace.package]
 authors = ["mingyang91 <my@famer.me>"]

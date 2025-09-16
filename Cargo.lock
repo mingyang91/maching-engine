@@ -1069,7 +1069,10 @@ version = "0.1.0"
 dependencies = [
  "openmatching",
  "sqlx",
+ "thiserror",
  "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
