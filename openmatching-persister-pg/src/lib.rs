@@ -1,83 +1,52 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use openmatching::{
     persister::AsyncPersister,
     protos::{Order, OrderStatus, Side, TimebasedKey},
 };
 use sqlx::{Pool, Postgres};
-use tokio::sync::Mutex;
+use tokio::{
+    select,
+    sync::{mpsc, oneshot},
+};
 use uuid::Uuid;
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum PgPersisterError {
     #[error("db error")]
-    DB(#[from] sqlx::Error),
-    #[error("migrate error")]
-    Migrate(#[from] sqlx::migrate::MigrateError),
+    DB(#[from] Arc<sqlx::Error>),
+    #[error("channel closed")]
+    ChannelClosed,
 }
 
-#[derive(Clone)]
-pub struct PgPersister {
-    pool: Arc<Mutex<Pool<Postgres>>>,
-}
-
-impl PgPersister {
-    pub async fn new(url: &str) -> Result<Self, PgPersisterError> {
-        let pool = Pool::connect(url).await?;
-        let migrator = sqlx::migrate!("./migrations");
-        migrator.run(&pool).await?;
-        Ok(PgPersister {
-            pool: Arc::new(Mutex::new(pool)),
-        })
-    }
-}
-
-// fn order_to_upsert(orders: Vec<Order>) -> Vec<String> {
-//     let mut all_orders = vec![
-//         "INSERT INTO all_orders (key, price, quantity, remaining, side, status) VALUES\n"
-//             .to_string(),
-//     ];
-
-//     for order in orders {
-//         let key: TimebasedKey = order.key.expect("key should be present").into();
-//         let key_uuid = uuid::Uuid::from_bytes(key.to_bytes());
-//         let values = format!(
-//             "('{key}', {price}, {quantity}, {remaining}, '{side}', '{status}'),\n",
-//             key = key_uuid,
-//             price = key.get_price(),
-//             quantity = order.quantity,
-//             remaining = order.remaining,
-//             side = order.side,
-//             status = order.status
-//         );
-
-//         all_orders.push(values);
-//     }
-
-//     let on_conflict = r#"ON CONFLICT (key) DO UPDATE SET
-//         price = EXCLUDED.price,
-//         quantity = EXCLUDED.quantity,
-//         remaining = EXCLUDED.remaining,
-//         side = EXCLUDED.side,
-//         status = EXCLUDED.status;
-//         "#
-//     .to_string();
-// }
-
-impl AsyncPersister for PgPersister {
-    type Error = PgPersisterError;
-
-    fn upsert_order(
-        &self,
+enum Command {
+    Upsert {
+        reply: oneshot::Sender<Result<(), PgPersisterError>>,
         orders: Vec<Order>,
-    ) -> impl Future<Output = Result<(), Self::Error>> + 'static {
-        let mut dedup_keys = BTreeSet::new();
+    },
+    Close,
+}
+
+struct Inner {
+    pool: Pool<Postgres>,
+    tx: mpsc::Sender<Command>,
+}
+
+impl Inner {
+    async fn upsert_order(&self, orders: Vec<Order>) -> Result<(), PgPersisterError> {
+        let orders = orders
+            .into_iter()
+            .map(|o| {
+                let key: TimebasedKey = o.key.expect("key should be present").into();
+                let key_uuid = uuid::Uuid::from_bytes(key.to_bytes());
+                (key_uuid, o)
+            })
+            .collect::<BTreeMap<_, _>>();
         let (keys, (prices, quantities, remaining, sides, statuses, order_types)): (
             Vec<Uuid>,
             (Vec<f32>, Vec<i64>, Vec<i64>, Vec<i16>, Vec<i16>, Vec<i16>),
         ) = orders
-            .iter()
-            .filter(|o| dedup_keys.insert(o.key.expect("key should be present")))
+            .values()
             .map(|o| {
                 let key: TimebasedKey = o.key.expect("key should be present").into();
                 let key_uuid = uuid::Uuid::from_bytes(key.to_bytes());
@@ -95,10 +64,8 @@ impl AsyncPersister for PgPersister {
             })
             .unzip();
         let pool = self.pool.clone();
-        async move {
-            let pool = pool.lock().await;
-            let mut tx = pool.begin().await?;
-            let res = sqlx::query!(
+        let mut tx = pool.begin().await.map_err(Arc::new)?;
+        let res = sqlx::query!(
                 r#"
                 INSERT INTO all_orders (key, price, quantity, remaining, side, status, order_type)
                 SELECT * FROM unnest($1::uuid[], $2::real[], $3::bigint[], $4::bigint[], $5::smallint[], $6::smallint[], $7::smallint[])
@@ -119,10 +86,92 @@ impl AsyncPersister for PgPersister {
                 &order_types,
             )
             .execute(&mut *tx)
-            .await?;
-            tracing::debug!("upserted {} orders", res.rows_affected());
-            tx.commit().await?;
-            Ok(())
+            .await.map_err(Arc::new)?;
+        tracing::debug!("upserted {} orders", res.rows_affected());
+        tx.commit().await.map_err(Arc::new)?;
+        Ok(())
+    }
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        while self.tx.try_send(Command::Close).is_err() && !self.tx.is_closed() {}
+    }
+}
+
+#[derive(Clone)]
+pub struct PgPersister {
+    inner: Arc<Inner>,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum PgPersisterCreateError {
+    #[error("db error")]
+    DB(#[from] sqlx::Error),
+    #[error("migrate error")]
+    Migrate(#[from] sqlx::migrate::MigrateError),
+}
+
+impl PgPersister {
+    pub async fn new(url: &str) -> Result<Self, PgPersisterCreateError> {
+        let pool = Pool::connect(url).await?;
+        let migrator = sqlx::migrate!("./migrations");
+        migrator.run(&pool).await?;
+        let (tx, mut rx) = mpsc::channel(65535);
+        let inner = Arc::new(Inner { pool, tx });
+        let inner_clone = inner.clone();
+        tokio::spawn(async move {
+            loop {
+                let mut collected_orders = vec![];
+                let mut collected_replys = vec![];
+                let polling = async {
+                    loop {
+                        match rx.recv().await {
+                            None | Some(Command::Close) => return true,
+                            Some(Command::Upsert { reply, orders }) => {
+                                collected_orders.extend(orders);
+                                collected_replys.push(reply);
+                            }
+                        }
+                        if collected_replys.len() > 256 {
+                            return false;
+                        }
+                    }
+                };
+                select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    is_polling_done = polling => {
+                        if is_polling_done {
+                            break
+                        }
+                    },
+                }
+                let res = inner_clone.upsert_order(collected_orders).await;
+                for reply in collected_replys {
+                    if reply.send(res.clone()).is_err() {
+                        tracing::warn!("failed to send upsert reply");
+                    }
+                }
+            }
+        });
+        Ok(PgPersister { inner })
+    }
+}
+
+impl AsyncPersister for PgPersister {
+    type Error = PgPersisterError;
+
+    fn upsert_order(
+        &self,
+        orders: Vec<Order>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + 'static {
+        let tx = self.inner.tx.clone();
+        async move {
+            let (reply, rx) = oneshot::channel();
+            tx.send(Command::Upsert { reply, orders })
+                .await
+                .map_err(|_| Self::Error::ChannelClosed)?;
+            rx.await.map_err(|_| Self::Error::ChannelClosed)?
         }
     }
 
@@ -130,18 +179,18 @@ impl AsyncPersister for PgPersister {
         &self,
         key: TimebasedKey,
     ) -> impl Future<Output = Result<Option<Order>, Self::Error>> + 'static {
-        let pool = self.pool.clone();
+        let pool = self.inner.pool.clone();
         let key_uuid = uuid::Uuid::from_bytes(key.to_bytes());
         async move {
-            let pool = pool.lock().await;
             let res = sqlx::query!(
                 r#"
                 SELECT * FROM all_orders WHERE key = $1
                 "#,
                 key_uuid,
             )
-            .fetch_optional(&*pool)
-            .await?;
+            .fetch_optional(&pool)
+            .await
+            .map_err(Arc::new)?;
             let Some(res) = res else {
                 return Ok(None);
             };
@@ -161,9 +210,8 @@ impl AsyncPersister for PgPersister {
     fn get_all_buy_orders(
         &self,
     ) -> impl Future<Output = Result<Vec<Order>, Self::Error>> + 'static {
-        let pool = self.pool.clone();
+        let pool = self.inner.pool.clone();
         async move {
-            let pool = pool.lock().await;
             let res = sqlx::query!(
                 r#"
                 SELECT * FROM all_orders WHERE side = $1 and status in ($2, $3)
@@ -172,8 +220,9 @@ impl AsyncPersister for PgPersister {
                 OrderStatus::Open as i16,
                 OrderStatus::PartiallyFilled as i16,
             )
-            .fetch_all(&*pool)
-            .await?;
+            .fetch_all(&pool)
+            .await
+            .map_err(Arc::new)?;
             let orders: Vec<Order> = res
                 .iter()
                 .map(|r| {
@@ -195,9 +244,8 @@ impl AsyncPersister for PgPersister {
     fn get_all_sell_orders(
         &self,
     ) -> impl Future<Output = Result<Vec<Order>, Self::Error>> + 'static {
-        let pool = self.pool.clone();
+        let pool = self.inner.pool.clone();
         async move {
-            let pool = pool.lock().await;
             let res = sqlx::query!(
                 r#"
                 SELECT * FROM all_orders WHERE side = $1 and status in ($2, $3)
@@ -206,8 +254,9 @@ impl AsyncPersister for PgPersister {
                 OrderStatus::Open as i16,
                 OrderStatus::PartiallyFilled as i16,
             )
-            .fetch_all(&*pool)
-            .await?;
+            .fetch_all(&pool)
+            .await
+            .map_err(Arc::new)?;
             let orders: Vec<Order> = res
                 .iter()
                 .map(|r| {

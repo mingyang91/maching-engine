@@ -45,7 +45,7 @@ async fn main() {
         let mut g = Gen::new(1000);
         let mut count = 0;
         let now = Instant::now();
-        for _ in 0..1000 {
+        for _ in 0..10000 {
             let orders = Vec::<Order>::arbitrary(&mut g);
             count += orders.len();
             if let Err(e) = sender.send(orders).await {
