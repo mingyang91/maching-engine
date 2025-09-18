@@ -203,10 +203,13 @@ impl AccountService {
         let res = sqlx::query!(
             r#"
             UPDATE accounts 
-            SET pending_debit = pending_debit + $1 
+            SET 
+                balance = balance - $1,
+                pending_debit = pending_debit + $1,
+                updated_at = CURRENT_TIMESTAMP
             WHERE username = $2 
               AND asset = $3 
-              AND updated_at = CURRENT_TIMESTAMP"#,
+              AND balance >= $1"#,
             amount as i64,
             account.0,
             asset.0,
@@ -239,7 +242,6 @@ impl AccountService {
             SET pending_debit = pending_debit - $1 
             WHERE username = $2 
               AND asset = $3 
-              AND updated_at = CURRENT_TIMESTAMP
               AND pending_debit >= $1"#,
             amount as i64,
             account.0,
@@ -265,10 +267,12 @@ impl AccountService {
         let res = sqlx::query!(
             r#"
             UPDATE accounts 
-            SET pending_debit = pending_debit - $1 
+            SET 
+                pending_debit = pending_debit - $1,
+                balance = balance + $1,
+                updated_at = CURRENT_TIMESTAMP
             WHERE username = $2 
               AND asset = $3 
-              AND updated_at = CURRENT_TIMESTAMP
               AND pending_debit >= $1"#,
             amount as i64,
             account.0,
@@ -294,10 +298,10 @@ impl AccountService {
         let res = sqlx::query!(
             r#"
             UPDATE accounts 
-            SET pending_credit = pending_credit + $1 
+            SET pending_credit = pending_credit + $1,
+                updated_at = CURRENT_TIMESTAMP
             WHERE username = $2 
-              AND asset = $3 
-              AND updated_at = CURRENT_TIMESTAMP"#,
+              AND asset = $3"#,
             amount as i64,
             account.0,
             asset.0,
@@ -328,10 +332,10 @@ impl AccountService {
             r#"
             UPDATE accounts 
             SET pending_credit = pending_credit - $1,
-                balance = balance + $1
+                balance = balance + $1,
+                updated_at = CURRENT_TIMESTAMP
             WHERE username = $2 
               AND asset = $3 
-              AND updated_at = CURRENT_TIMESTAMP
               AND pending_credit >= $1"#,
             amount as i64,
             account.0,
@@ -357,10 +361,10 @@ impl AccountService {
         let res = sqlx::query!(
             r#"
             UPDATE accounts 
-            SET pending_credit = pending_credit - $1
+            SET pending_credit = pending_credit - $1,
+                updated_at = CURRENT_TIMESTAMP
             WHERE username = $2
               AND asset = $3 
-              AND updated_at = CURRENT_TIMESTAMP
               AND pending_credit >= $1"#,
             amount as i64,
             account.0,
@@ -386,11 +390,11 @@ impl AccountService {
         let res = sqlx::query!(
             r#"
             UPDATE accounts 
-            SET balance = balance - $1 
-            WHERE user = $2 
+            SET balance = balance - $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE username = $2 
             AND asset = $3 
-            AND balance >= $1 
-            AND updated_at = CURRENT_TIMESTAMP"#,
+            AND balance >= $1"#,
             amount as i64,
             account.0,
             asset.0,
@@ -590,6 +594,8 @@ impl AccountService {
             transaction.amount as u64,
         )
         .await?;
+
+        self.complete_transaction(&mut *tx, id).await?;
 
         tx.commit().await?;
         Ok(())
