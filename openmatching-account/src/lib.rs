@@ -1,19 +1,22 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::OnceLock};
 
 use chrono::NaiveDateTime;
 use sqlx::{Executor, PgPool, Postgres, prelude::FromRow};
 use uuid::Uuid;
 
-const THE_OUTSIDE_WORLD: &str = "THE OUTSIDE WORLD";
+static THE_OUTSIDE_WORLD: OnceLock<Username> = OnceLock::new();
+fn the_outside_world() -> &'static Username {
+    THE_OUTSIDE_WORLD.get_or_init(|| Username("THE OUTSIDE WORLD".to_string()))
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum AccountServiceError {
     #[error("db error")]
     DB(#[from] sqlx::Error),
-    #[error("insufficient balance for {1}@{0}")]
-    InsufficientBalance(String, String),
-    #[error("account {1}@{0} not found")]
-    AccountNotFound(String, String),
+    #[error("insufficient balance for {1:?}@{0:?}")]
+    InsufficientBalance(Username, Asset),
+    #[error("account {1:?}@{0:?} not found")]
+    AccountNotFound(Username, Asset),
     #[error("transaction#{0} conflict")]
     TransactionConflict(Uuid),
     #[error("transaction#{0} not found")]
@@ -21,6 +24,12 @@ pub enum AccountServiceError {
     #[error("illegal state")]
     IllegalState,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Username(String);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asset(String);
 
 pub struct AccountService {
     db: PgPool,
@@ -68,9 +77,9 @@ impl AccountService {
         executor: impl Executor<'_, Database = Postgres>,
         id: Uuid,
         r#type: TransactionType,
-        debitor: &str,
-        creditor: &str,
-        asset: &str,
+        debitor: &Username,
+        creditor: &Username,
+        asset: &Asset,
         amount: u64,
         status: TransactionStatus,
         external_id: Option<String>,
@@ -81,9 +90,9 @@ impl AccountService {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"#,
             id,
             r#type as TransactionType,
-            debitor,
-            creditor,
-            asset,
+            debitor.0,
+            creditor.0,
+            asset.0,
             amount as i64,
             status as TransactionStatus,
             external_id,
@@ -187,8 +196,8 @@ impl AccountService {
     async fn pre_debit_account(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
-        account: &str,
-        asset: &str,
+        account: &Username,
+        asset: &Asset,
         amount: u64,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
@@ -199,16 +208,16 @@ impl AccountService {
               AND asset = $3 
               AND updated_at = CURRENT_TIMESTAMP"#,
             amount as i64,
-            account,
-            asset,
+            account.0,
+            asset.0,
         )
         .execute(executor)
         .await?;
 
         if res.rows_affected() == 0 {
             return Err(AccountServiceError::AccountNotFound(
-                account.to_string(),
-                asset.to_string(),
+                account.clone(),
+                asset.clone(),
             ));
         } else if res.rows_affected() > 1 {
             return Err(AccountServiceError::IllegalState);
@@ -220,8 +229,8 @@ impl AccountService {
     async fn commit_pre_debit_account(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
-        account: &str,
-        asset: &str,
+        account: &Username,
+        asset: &Asset,
         amount: u64,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
@@ -233,8 +242,8 @@ impl AccountService {
               AND updated_at = CURRENT_TIMESTAMP
               AND pending_debit >= $1"#,
             amount as i64,
-            account,
-            asset,
+            account.0,
+            asset.0,
         )
         .execute(executor)
         .await?;
@@ -249,8 +258,8 @@ impl AccountService {
     async fn abort_pre_debit_account(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
-        account: &str,
-        asset: &str,
+        account: &Username,
+        asset: &Asset,
         amount: u64,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
@@ -262,8 +271,8 @@ impl AccountService {
               AND updated_at = CURRENT_TIMESTAMP
               AND pending_debit >= $1"#,
             amount as i64,
-            account,
-            asset,
+            account.0,
+            asset.0,
         )
         .execute(executor)
         .await?;
@@ -278,8 +287,8 @@ impl AccountService {
     async fn pre_credit_account(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
-        account: &str,
-        asset: &str,
+        account: &Username,
+        asset: &Asset,
         amount: u64,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
@@ -290,16 +299,16 @@ impl AccountService {
               AND asset = $3 
               AND updated_at = CURRENT_TIMESTAMP"#,
             amount as i64,
-            account,
-            asset,
+            account.0,
+            asset.0,
         )
         .execute(executor)
         .await?;
 
         if res.rows_affected() == 0 {
             return Err(AccountServiceError::AccountNotFound(
-                account.to_string(),
-                asset.to_string(),
+                account.clone(),
+                asset.clone(),
             ));
         } else if res.rows_affected() > 1 {
             return Err(AccountServiceError::IllegalState);
@@ -311,8 +320,8 @@ impl AccountService {
     async fn commit_pre_credit_account(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
-        account: &str,
-        asset: &str,
+        account: &Username,
+        asset: &Asset,
         amount: u64,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
@@ -325,8 +334,8 @@ impl AccountService {
               AND updated_at = CURRENT_TIMESTAMP
               AND pending_credit >= $1"#,
             amount as i64,
-            account,
-            asset,
+            account.0,
+            asset.0,
         )
         .execute(executor)
         .await?;
@@ -341,8 +350,8 @@ impl AccountService {
     async fn abort_pre_credit_account(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
-        account: &str,
-        asset: &str,
+        account: &Username,
+        asset: &Asset,
         amount: u64,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
@@ -354,8 +363,8 @@ impl AccountService {
               AND updated_at = CURRENT_TIMESTAMP
               AND pending_credit >= $1"#,
             amount as i64,
-            account,
-            asset,
+            account.0,
+            asset.0,
         )
         .execute(executor)
         .await?;
@@ -370,8 +379,8 @@ impl AccountService {
     async fn debit_account(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
-        account: &str,
-        asset: &str,
+        account: &Username,
+        asset: &Asset,
         amount: u64,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
@@ -383,16 +392,16 @@ impl AccountService {
             AND balance >= $1 
             AND updated_at = CURRENT_TIMESTAMP"#,
             amount as i64,
-            account,
-            asset,
+            account.0,
+            asset.0,
         )
         .execute(executor)
         .await?;
 
         if res.rows_affected() == 0 {
             return Err(AccountServiceError::InsufficientBalance(
-                account.to_string(),
-                asset.to_string(),
+                account.clone(),
+                asset.clone(),
             ));
         } else if res.rows_affected() > 1 {
             return Err(AccountServiceError::IllegalState);
@@ -404,8 +413,8 @@ impl AccountService {
     async fn credit_account(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
-        account: &str,
-        asset: &str,
+        account: &Username,
+        asset: &Asset,
         amount: u64,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
@@ -415,8 +424,8 @@ impl AccountService {
             ON CONFLICT (username, asset) DO UPDATE
             SET balance = EXCLUDED.balance + $3,
                 updated_at = CURRENT_TIMESTAMP"#,
-            account,
-            asset,
+            account.0,
+            asset.0,
             amount as i64,
         )
         .execute(executor)
@@ -432,11 +441,11 @@ impl AccountService {
     pub async fn transfer(
         &self,
         id: Uuid,
-        debitor: String,
-        creditor: String,
-        asset: String,
+        debitor: &Username,
+        creditor: &Username,
+        asset: &Asset,
         amount: u64,
-        fee: Option<(String, u64)>,
+        fee: Option<(Username, Asset, u64)>,
     ) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
         self.insert_transaction(
@@ -452,14 +461,14 @@ impl AccountService {
         )
         .await?;
 
-        if let Some((fee_account, fee_amount)) = fee {
+        if let Some((fee_account, fee_asset, fee_amount)) = fee {
             self.insert_transaction(
                 &mut *tx,
                 id,
                 TransactionType::Fee as TransactionType,
                 &debitor,
                 &fee_account,
-                &fee_account,
+                &fee_asset,
                 fee_amount,
                 TransactionStatus::Completed as TransactionStatus,
                 None,
@@ -467,10 +476,10 @@ impl AccountService {
             .await?;
         }
 
-        self.debit_account(&mut *tx, &debitor, &debitor, amount)
+        self.debit_account(&mut *tx, &debitor, &asset, amount)
             .await?;
 
-        self.credit_account(&mut *tx, &creditor, &creditor, amount)
+        self.credit_account(&mut *tx, &creditor, &asset, amount)
             .await?;
 
         tx.commit().await?;
@@ -480,8 +489,8 @@ impl AccountService {
     pub async fn start_deposit(
         &self,
         id: Uuid,
-        account: &str,
-        asset: &str,
+        account: &Username,
+        asset: &Asset,
         amount: u64,
         external_id: Option<String>,
     ) -> Result<(), AccountServiceError> {
@@ -490,7 +499,7 @@ impl AccountService {
             &mut *tx,
             id,
             TransactionType::Deposit as TransactionType,
-            THE_OUTSIDE_WORLD,
+            the_outside_world(),
             &account,
             &asset,
             amount,
@@ -512,8 +521,8 @@ impl AccountService {
 
         self.commit_pre_credit_account(
             &mut *tx,
-            &transaction.creditor,
-            &transaction.asset,
+            &Username(transaction.creditor.clone()),
+            &Asset(transaction.asset.clone()),
             transaction.amount as u64,
         )
         .await?;
@@ -530,8 +539,8 @@ impl AccountService {
 
         self.abort_pre_credit_account(
             &mut *tx,
-            &transaction.creditor,
-            &transaction.asset,
+            &Username(transaction.creditor.clone()),
+            &Asset(transaction.asset.clone()),
             transaction.amount as u64,
         )
         .await?;
@@ -545,8 +554,8 @@ impl AccountService {
     pub async fn start_withdrawal(
         &self,
         id: Uuid,
-        account: &str,
-        asset: &str,
+        account: &Username,
+        asset: &Asset,
         amount: u64,
     ) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
@@ -555,7 +564,7 @@ impl AccountService {
             id,
             TransactionType::Withdrawal as TransactionType,
             &account,
-            THE_OUTSIDE_WORLD,
+            the_outside_world(),
             &asset,
             amount,
             TransactionStatus::Pending as TransactionStatus,
@@ -576,8 +585,8 @@ impl AccountService {
 
         self.commit_pre_debit_account(
             &mut *tx,
-            &transaction.debitor,
-            &transaction.asset,
+            &Username(transaction.debitor.clone()),
+            &Asset(transaction.asset.clone()),
             transaction.amount as u64,
         )
         .await?;
@@ -592,8 +601,8 @@ impl AccountService {
 
         self.abort_pre_debit_account(
             &mut *tx,
-            &transaction.debitor,
-            &transaction.asset,
+            &Username(transaction.debitor.clone()),
+            &Asset(transaction.asset.clone()),
             transaction.amount as u64,
         )
         .await?;
