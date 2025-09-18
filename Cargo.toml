@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "openmatching",
+    "openmatching-account",
     "openmatching-persister-pg",
     "openmatching-persister-rocksdb",
 ]
@@ -14,5 +15,6 @@ rust-version = "1.80"
 
 [workspace.dependencies]
 openmatching = { path = "openmatching", version = "0.1.0" }
+openmatching-account = { path = "openmatching-account", version = "0.1.0" }
 openmatching-persister-pg = { path = "openmatching-persister-pg", version = "0.1.0" }
 openmatching-persister-rocksdb = { path = "openmatching-persister-rocksdb", version = "0.1.0" }
