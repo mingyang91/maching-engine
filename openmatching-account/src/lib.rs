@@ -1,9 +1,11 @@
-//! Account service for managing user balances and transactions
+//! Account service with two-phase commit for external operations.
 //!
-//! Key concepts:
-//! - `reserve_funds`: Lock funds for pending withdrawals
-//! - `track_incoming`: Track pending deposits
-//! - Internal transfers are immediate, external operations use pending states
+//! Internal transfers are atomic and immediate.
+//! External operations (deposits/withdrawals) use pending states:
+//! - Deposits: track incoming → approve/reject → balance updated
+//! - Withdrawals: reserve from balance → approve/reject → complete
+//!
+//! Account invariant: `available = balance - reserved`
 
 use std::{collections::BTreeMap, fmt::Debug};
 
@@ -12,7 +14,7 @@ use chrono::NaiveDateTime;
 use sqlx::{Executor, PgPool, Postgres, prelude::FromRow};
 use uuid::Uuid;
 
-/// External account identifier for deposits/withdrawals
+/// External account for deposits/withdrawals
 const EXTERNAL_ACCOUNT: &str = "EXTERNAL";
 
 #[derive(thiserror::Error, Debug)]
@@ -27,6 +29,7 @@ pub enum AccountServiceError {
     TransactionConflict(Uuid),
     #[error("transaction#{0} not found")]
     TransactionNotFound(Uuid),
+    /// Data inconsistency - requires immediate investigation
     #[error("illegal state")]
     IllegalState,
 }
@@ -40,6 +43,7 @@ struct CheckAccountIntegrityResult {
     incoming_discrepancy: Option<BigDecimal>,
 }
 
+/// Account integrity check result - non-zero values indicate problems.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountIntegrityResult {
     username: String,
@@ -60,9 +64,30 @@ pub enum AccountIntegrityError {
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Username(String);
 
+impl Username {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Asset(String);
 
+impl Asset {
+    pub fn new(asset: impl Into<String>) -> Self {
+        Self(asset.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Account service - thread-safe, can be shared across async tasks.
 pub struct AccountService {
     db: PgPool,
 }
@@ -84,6 +109,7 @@ pub enum TransactionStatus {
     Failed,
 }
 
+/// Immutable transaction record.
 #[derive(Debug, Clone, PartialEq, Eq, FromRow)]
 pub struct Transaction {
     id: Uuid,
@@ -101,6 +127,7 @@ pub struct Transaction {
     updated_at: NaiveDateTime,
 }
 
+/// Account with balance, incoming (pending deposits), and reserved (pending withdrawals).
 #[derive(Debug, Clone, PartialEq, Eq, FromRow)]
 pub struct Account {
     username: String,
@@ -239,7 +266,7 @@ impl AccountService {
         Ok(())
     }
 
-    /// Reserve funds for a pending withdrawal (deducts from balance, adds to pending_debit)
+    /// Reserve funds for withdrawal (balance -> reserved)
     async fn reserve_funds(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
@@ -276,7 +303,7 @@ impl AccountService {
         Ok(())
     }
 
-    /// Complete a withdrawal by releasing the reservation (removes from pending_debit)
+    /// Complete withdrawal (remove reservation)
     async fn release_reservation(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
@@ -305,7 +332,7 @@ impl AccountService {
         Ok(())
     }
 
-    /// Cancel a withdrawal by returning reserved funds (removes from pending_debit, returns to balance)
+    /// Cancel withdrawal (reserved -> balance)
     async fn cancel_reservation(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
@@ -337,7 +364,7 @@ impl AccountService {
         Ok(())
     }
 
-    /// Track incoming funds from a deposit (adds to pending_credit)
+    /// Track incoming deposit
     async fn track_incoming(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
@@ -371,7 +398,7 @@ impl AccountService {
         Ok(())
     }
 
-    /// Accept incoming funds and add to balance (moves from pending_credit to balance)
+    /// Accept deposit (incoming -> balance)
     async fn accept_incoming(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
@@ -402,7 +429,7 @@ impl AccountService {
         Ok(())
     }
 
-    /// Reject incoming funds (removes from pending_credit)
+    /// Reject deposit (cancel incoming)
     async fn reject_incoming(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
@@ -494,7 +521,7 @@ impl AccountService {
         Ok(())
     }
 
-    /// Perform an internal transfer between accounts (immediate, no pending state)
+    /// Atomic transfer between accounts. No pending states.
     pub async fn transfer(
         &self,
         id: Uuid,
@@ -542,7 +569,7 @@ impl AccountService {
         Ok(())
     }
 
-    /// Start a deposit from external source (funds tracked as pending until confirmed)
+    /// Start deposit - funds tracked as incoming until approved.
     pub async fn start_deposit(
         &self,
         id: Uuid,
@@ -572,7 +599,6 @@ impl AccountService {
         Ok(())
     }
 
-    /// Approve a pending deposit (moves funds from pending to available balance)
     pub async fn approve_deposit(&self, id: Uuid) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
         let transaction = self.lock_transaction(&mut *tx, id).await?;
@@ -591,7 +617,6 @@ impl AccountService {
         Ok(())
     }
 
-    /// Reject a pending deposit (cancels the pending credit)
     pub async fn reject_deposit(&self, id: Uuid) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
         let transaction = self.lock_transaction(&mut *tx, id).await?;
@@ -610,7 +635,7 @@ impl AccountService {
         Ok(())
     }
 
-    /// Start a withdrawal to external destination (reserves funds from balance)
+    /// Start withdrawal - reserves funds from balance.
     pub async fn start_withdrawal(
         &self,
         id: Uuid,
@@ -638,7 +663,7 @@ impl AccountService {
         Ok(())
     }
 
-    /// Approve a pending withdrawal (completes the fund reservation)
+    /// Funds already deducted, this removes the reservation.
     pub async fn approve_withdrawal(&self, id: Uuid) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
         let transaction = self.lock_transaction(&mut *tx, id).await?;
@@ -657,7 +682,6 @@ impl AccountService {
         Ok(())
     }
 
-    /// Reject a pending withdrawal (returns reserved funds to balance)
     pub async fn reject_withdrawal(&self, id: Uuid) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
         let transaction = self.lock_transaction(&mut *tx, id).await?;
@@ -674,6 +698,7 @@ impl AccountService {
         Ok(())
     }
 
+    /// Get account for specific asset. Returns None if not exists.
     pub async fn get_asset_account(
         &self,
         account: &Username,
@@ -691,6 +716,7 @@ impl AccountService {
         Ok(res)
     }
 
+    /// Get all accounts for a user.
     pub async fn get_account(
         &self,
         account: &Username,
@@ -709,6 +735,9 @@ impl AccountService {
             .collect())
     }
 
+    /// Verify all account balances match transaction history.
+    ///
+    /// Returns error with discrepancies if any found.
     pub async fn check_account_integrity(&self) -> Result<(), AccountIntegrityError> {
         let res: Vec<CheckAccountIntegrityResult> = sqlx::query_as!(
             CheckAccountIntegrityResult,
