@@ -32,6 +32,11 @@ struct Inner {
     tx: mpsc::Sender<Command>,
 }
 
+type RowsTuple = (
+    Vec<Uuid>,
+    (Vec<f32>, Vec<i64>, Vec<i64>, Vec<i16>, Vec<i16>, Vec<i16>),
+);
+
 impl Inner {
     async fn upsert_order(&self, orders: Vec<Order>) -> Result<(), PgPersisterError> {
         let orders = orders
@@ -42,27 +47,25 @@ impl Inner {
                 (key_uuid, o)
             })
             .collect::<BTreeMap<_, _>>();
-        let (keys, (prices, quantities, remaining, sides, statuses, order_types)): (
-            Vec<Uuid>,
-            (Vec<f32>, Vec<i64>, Vec<i64>, Vec<i16>, Vec<i16>, Vec<i16>),
-        ) = orders
-            .values()
-            .map(|o| {
-                let key: TimebasedKey = o.key.expect("key should be present").into();
-                let key_uuid = uuid::Uuid::from_bytes(key.to_bytes());
-                (
-                    key_uuid,
+        let (keys, (prices, quantities, remaining, sides, statuses, order_types)): RowsTuple =
+            orders
+                .values()
+                .map(|o| {
+                    let key: TimebasedKey = o.key.expect("key should be present").into();
+                    let key_uuid = uuid::Uuid::from_bytes(key.to_bytes());
                     (
-                        key.get_price(),
-                        o.quantity as i64,
-                        o.remaining as i64,
-                        o.side as i16,
-                        o.status as i16,
-                        o.order_type as i16,
-                    ),
-                )
-            })
-            .unzip();
+                        key_uuid,
+                        (
+                            key.get_price(),
+                            o.quantity as i64,
+                            o.remaining as i64,
+                            o.side as i16,
+                            o.status as i16,
+                            o.order_type as i16,
+                        ),
+                    )
+                })
+                .unzip();
         let pool = self.pool.clone();
         let mut tx = pool.begin().await.map_err(Arc::new)?;
         let res = sqlx::query!(

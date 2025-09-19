@@ -84,6 +84,7 @@ impl AccountService {
         Self { db }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn insert_transaction(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
@@ -648,7 +649,7 @@ impl AccountService {
     pub async fn get_account(
         &self,
         account: &Username,
-    ) -> Result<Option<BTreeMap<Asset, AccountRow>>, AccountServiceError> {
+    ) -> Result<BTreeMap<Asset, AccountRow>, AccountServiceError> {
         let res: Vec<AccountRow> = sqlx::query_as!(
             AccountRow,
             r#"SELECT * FROM accounts WHERE username = $1"#,
@@ -656,15 +657,11 @@ impl AccountService {
         )
         .fetch_all(&self.db)
         .await?;
-        if res.is_empty() {
-            return Ok(None);
-        }
 
-        Ok(Some(
-            res.into_iter()
-                .map(|row| (Asset(row.asset.clone()), row))
-                .collect(),
-        ))
+        Ok(res
+            .into_iter()
+            .map(|row| (Asset(row.asset.clone()), row))
+            .collect())
     }
 }
 
