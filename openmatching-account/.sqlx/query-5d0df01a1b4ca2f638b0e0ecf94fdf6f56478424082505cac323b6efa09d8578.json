@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM accounts WHERE username = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "username",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "asset",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "balance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 3,
+        "name": "pending_credit",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 4,
+        "name": "pending_debit",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5d0df01a1b4ca2f638b0e0ecf94fdf6f56478424082505cac323b6efa09d8578"
+}

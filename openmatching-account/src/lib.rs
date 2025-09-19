@@ -1,5 +1,6 @@
-use std::{fmt::Debug, sync::OnceLock};
+use std::{collections::BTreeMap, fmt::Debug, sync::OnceLock};
 
+use bigdecimal::BigDecimal;
 use chrono::NaiveDateTime;
 use sqlx::{Executor, PgPool, Postgres, prelude::FromRow};
 use uuid::Uuid;
@@ -25,10 +26,10 @@ pub enum AccountServiceError {
     IllegalState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Username(String);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Asset(String);
 
 pub struct AccountService {
@@ -37,7 +38,7 @@ pub struct AccountService {
 
 #[derive(sqlx::Type, Debug, PartialEq, Eq, Clone)]
 #[sqlx(type_name = "transaction_type", rename_all = "lowercase")]
-enum TransactionType {
+pub enum TransactionType {
     Transfer,
     Deposit,
     Withdrawal,
@@ -46,23 +47,34 @@ enum TransactionType {
 
 #[derive(sqlx::Type, Debug, PartialEq, Eq, Clone)]
 #[sqlx(type_name = "transaction_status", rename_all = "lowercase")]
-enum TransactionStatus {
+pub enum TransactionStatus {
     Pending,
     Completed,
     Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, FromRow)]
-struct Transaction {
+pub struct TransactionRow {
     id: Uuid,
     r#type: TransactionType,
     debitor: String,
     creditor: String,
     asset: String,
-    amount: i64,
+    amount: BigDecimal,
     status: TransactionStatus,
     extra: Option<serde_json::Value>,
     external_id: Option<String>,
+    created_at: NaiveDateTime,
+    updated_at: NaiveDateTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct AccountRow {
+    username: String,
+    asset: String,
+    balance: BigDecimal,
+    pending_credit: BigDecimal,
+    pending_debit: BigDecimal,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
 }
@@ -80,7 +92,7 @@ impl AccountService {
         debitor: &Username,
         creditor: &Username,
         asset: &Asset,
-        amount: u64,
+        amount: &BigDecimal,
         status: TransactionStatus,
         external_id: Option<String>,
     ) -> Result<(), AccountServiceError> {
@@ -93,7 +105,7 @@ impl AccountService {
             debitor.0,
             creditor.0,
             asset.0,
-            amount as i64,
+            amount,
             status as TransactionStatus,
             external_id,
         )
@@ -102,9 +114,9 @@ impl AccountService {
 
         match res {
             Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
-                return Err(AccountServiceError::TransactionConflict(id));
+                Err(AccountServiceError::TransactionConflict(id))
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => Err(e.into()),
             _ => Ok(()),
         }
     }
@@ -113,9 +125,9 @@ impl AccountService {
         &self,
         executor: impl Executor<'_, Database = Postgres>,
         id: Uuid,
-    ) -> Result<Transaction, AccountServiceError> {
+    ) -> Result<TransactionRow, AccountServiceError> {
         let res = sqlx::query_as!(
-            Transaction,
+            TransactionRow,
             r#"
             SELECT
                 id,
@@ -198,7 +210,7 @@ impl AccountService {
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
         asset: &Asset,
-        amount: u64,
+        amount: &BigDecimal,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
             r#"
@@ -210,7 +222,7 @@ impl AccountService {
             WHERE username = $2 
               AND asset = $3 
               AND balance >= $1"#,
-            amount as i64,
+            amount,
             account.0,
             asset.0,
         )
@@ -234,7 +246,7 @@ impl AccountService {
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
         asset: &Asset,
-        amount: u64,
+        amount: &BigDecimal,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
             r#"
@@ -243,7 +255,7 @@ impl AccountService {
             WHERE username = $2 
               AND asset = $3 
               AND pending_debit >= $1"#,
-            amount as i64,
+            amount,
             account.0,
             asset.0,
         )
@@ -262,7 +274,7 @@ impl AccountService {
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
         asset: &Asset,
-        amount: u64,
+        amount: &BigDecimal,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
             r#"
@@ -274,7 +286,7 @@ impl AccountService {
             WHERE username = $2 
               AND asset = $3 
               AND pending_debit >= $1"#,
-            amount as i64,
+            amount,
             account.0,
             asset.0,
         )
@@ -293,7 +305,7 @@ impl AccountService {
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
         asset: &Asset,
-        amount: u64,
+        amount: &BigDecimal,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
             r#"
@@ -302,7 +314,7 @@ impl AccountService {
                 updated_at = CURRENT_TIMESTAMP
             WHERE username = $2 
               AND asset = $3"#,
-            amount as i64,
+            amount,
             account.0,
             asset.0,
         )
@@ -326,7 +338,7 @@ impl AccountService {
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
         asset: &Asset,
-        amount: u64,
+        amount: &BigDecimal,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
             r#"
@@ -337,7 +349,7 @@ impl AccountService {
             WHERE username = $2 
               AND asset = $3 
               AND pending_credit >= $1"#,
-            amount as i64,
+            amount,
             account.0,
             asset.0,
         )
@@ -356,7 +368,7 @@ impl AccountService {
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
         asset: &Asset,
-        amount: u64,
+        amount: &BigDecimal,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
             r#"
@@ -366,7 +378,7 @@ impl AccountService {
             WHERE username = $2
               AND asset = $3 
               AND pending_credit >= $1"#,
-            amount as i64,
+            amount,
             account.0,
             asset.0,
         )
@@ -385,7 +397,7 @@ impl AccountService {
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
         asset: &Asset,
-        amount: u64,
+        amount: &BigDecimal,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
             r#"
@@ -395,7 +407,7 @@ impl AccountService {
             WHERE username = $2 
             AND asset = $3 
             AND balance >= $1"#,
-            amount as i64,
+            amount,
             account.0,
             asset.0,
         )
@@ -419,7 +431,7 @@ impl AccountService {
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
         asset: &Asset,
-        amount: u64,
+        amount: &BigDecimal,
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
             r#"
@@ -430,7 +442,7 @@ impl AccountService {
                 updated_at = CURRENT_TIMESTAMP"#,
             account.0,
             asset.0,
-            amount as i64,
+            amount,
         )
         .execute(executor)
         .await?;
@@ -448,17 +460,17 @@ impl AccountService {
         debitor: &Username,
         creditor: &Username,
         asset: &Asset,
-        amount: u64,
-        fee: Option<(Username, Asset, u64)>,
+        amount: &BigDecimal,
+        fee: Option<(Username, Asset, &BigDecimal)>,
     ) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
         self.insert_transaction(
             &mut *tx,
             id,
             TransactionType::Transfer as TransactionType,
-            &debitor,
-            &creditor,
-            &asset,
+            debitor,
+            creditor,
+            asset,
             amount,
             TransactionStatus::Completed as TransactionStatus,
             None,
@@ -470,7 +482,7 @@ impl AccountService {
                 &mut *tx,
                 id,
                 TransactionType::Fee as TransactionType,
-                &debitor,
+                debitor,
                 &fee_account,
                 &fee_asset,
                 fee_amount,
@@ -480,10 +492,9 @@ impl AccountService {
             .await?;
         }
 
-        self.debit_account(&mut *tx, &debitor, &asset, amount)
-            .await?;
+        self.debit_account(&mut *tx, debitor, asset, amount).await?;
 
-        self.credit_account(&mut *tx, &creditor, &asset, amount)
+        self.credit_account(&mut *tx, creditor, asset, amount)
             .await?;
 
         tx.commit().await?;
@@ -495,7 +506,7 @@ impl AccountService {
         id: Uuid,
         account: &Username,
         asset: &Asset,
-        amount: u64,
+        amount: &BigDecimal,
         external_id: Option<String>,
     ) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
@@ -504,15 +515,15 @@ impl AccountService {
             id,
             TransactionType::Deposit as TransactionType,
             the_outside_world(),
-            &account,
-            &asset,
+            account,
+            asset,
             amount,
             TransactionStatus::Pending as TransactionStatus,
             external_id,
         )
         .await?;
 
-        self.pre_credit_account(&mut *tx, &account, &asset, amount)
+        self.pre_credit_account(&mut *tx, account, asset, amount)
             .await?;
 
         tx.commit().await?;
@@ -527,7 +538,7 @@ impl AccountService {
             &mut *tx,
             &Username(transaction.creditor.clone()),
             &Asset(transaction.asset.clone()),
-            transaction.amount as u64,
+            &transaction.amount,
         )
         .await?;
 
@@ -545,7 +556,7 @@ impl AccountService {
             &mut *tx,
             &Username(transaction.creditor.clone()),
             &Asset(transaction.asset.clone()),
-            transaction.amount as u64,
+            &transaction.amount,
         )
         .await?;
 
@@ -560,23 +571,23 @@ impl AccountService {
         id: Uuid,
         account: &Username,
         asset: &Asset,
-        amount: u64,
+        amount: &BigDecimal,
     ) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
         self.insert_transaction(
             &mut *tx,
             id,
             TransactionType::Withdrawal as TransactionType,
-            &account,
+            account,
             the_outside_world(),
-            &asset,
+            asset,
             amount,
             TransactionStatus::Pending as TransactionStatus,
             None,
         )
         .await?;
 
-        self.pre_debit_account(&mut *tx, &account, &asset, amount)
+        self.pre_debit_account(&mut *tx, account, asset, amount)
             .await?;
 
         tx.commit().await?;
@@ -591,7 +602,7 @@ impl AccountService {
             &mut *tx,
             &Username(transaction.debitor.clone()),
             &Asset(transaction.asset.clone()),
-            transaction.amount as u64,
+            &transaction.amount,
         )
         .await?;
 
@@ -609,18 +620,56 @@ impl AccountService {
             &mut *tx,
             &Username(transaction.debitor.clone()),
             &Asset(transaction.asset.clone()),
-            transaction.amount as u64,
+            &transaction.amount,
         )
         .await?;
 
         tx.commit().await?;
         Ok(())
     }
+
+    pub async fn get_asset_account(
+        &self,
+        account: &Username,
+        asset: &Asset,
+    ) -> Result<Option<AccountRow>, AccountServiceError> {
+        let res = sqlx::query_as!(
+            AccountRow,
+            r#"SELECT * FROM accounts WHERE username = $1 AND asset = $2"#,
+            account.0,
+            asset.0,
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        Ok(res)
+    }
+
+    pub async fn get_account(
+        &self,
+        account: &Username,
+    ) -> Result<Option<BTreeMap<Asset, AccountRow>>, AccountServiceError> {
+        let res: Vec<AccountRow> = sqlx::query_as!(
+            AccountRow,
+            r#"SELECT * FROM accounts WHERE username = $1"#,
+            account.0,
+        )
+        .fetch_all(&self.db)
+        .await?;
+        if res.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(
+            res.into_iter()
+                .map(|row| (Asset(row.asset.clone()), row))
+                .collect(),
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_transaction2() {}
