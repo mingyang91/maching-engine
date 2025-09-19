@@ -68,7 +68,7 @@ pub struct AccountService {
 }
 
 #[derive(sqlx::Type, Debug, PartialEq, Eq, Clone)]
-#[sqlx(type_name = "transaction_type", rename_all = "lowercase")]
+#[sqlx(type_name = "transaction_kind", rename_all = "lowercase")]
 pub enum TransactionKind {
     Transfer,
     Deposit,
