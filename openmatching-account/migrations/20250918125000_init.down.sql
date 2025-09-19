@@ -1,5 +1,5 @@
--- Add down migration script here
-DROP TABLE transactions;
-DROP TYPE transaction_status;
-DROP TYPE transaction_type;
-DROP TABLE accounts;
+-- Rollback account system tables and types
+DROP TABLE IF EXISTS transactions;
+DROP TYPE IF EXISTS transaction_status;
+DROP TYPE IF EXISTS transaction_kind;
+DROP TABLE IF EXISTS accounts;

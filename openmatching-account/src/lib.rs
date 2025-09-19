@@ -1,14 +1,19 @@
-use std::{collections::BTreeMap, fmt::Debug, sync::OnceLock};
+//! Account service for managing user balances and transactions
+//!
+//! Key concepts:
+//! - `reserve_funds`: Lock funds for pending withdrawals
+//! - `track_incoming`: Track pending deposits
+//! - Internal transfers are immediate, external operations use pending states
+
+use std::{collections::BTreeMap, fmt::Debug};
 
 use bigdecimal::BigDecimal;
 use chrono::NaiveDateTime;
 use sqlx::{Executor, PgPool, Postgres, prelude::FromRow};
 use uuid::Uuid;
 
-static THE_OUTSIDE_WORLD: OnceLock<Username> = OnceLock::new();
-fn the_outside_world() -> &'static Username {
-    THE_OUTSIDE_WORLD.get_or_init(|| Username("THE OUTSIDE WORLD".to_string()))
-}
+/// External account identifier for deposits/withdrawals
+const EXTERNAL_ACCOUNT: &str = "EXTERNAL";
 
 #[derive(thiserror::Error, Debug)]
 pub enum AccountServiceError {
@@ -31,8 +36,8 @@ struct CheckAccountIntegrityResult {
     username: Option<String>,
     asset: Option<String>,
     balance_discrepancy: Option<BigDecimal>,
-    pending_debit_discrepancy: Option<BigDecimal>,
-    pending_credit_discrepancy: Option<BigDecimal>,
+    reserved_discrepancy: Option<BigDecimal>,
+    incoming_discrepancy: Option<BigDecimal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,8 +45,8 @@ pub struct AccountIntegrityResult {
     username: String,
     asset: String,
     balance_discrepancy: BigDecimal,
-    pending_debit_discrepancy: BigDecimal,
-    pending_credit_discrepancy: BigDecimal,
+    reserved_discrepancy: BigDecimal,
+    incoming_discrepancy: BigDecimal,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -64,7 +69,7 @@ pub struct AccountService {
 
 #[derive(sqlx::Type, Debug, PartialEq, Eq, Clone)]
 #[sqlx(type_name = "transaction_type", rename_all = "lowercase")]
-pub enum TransactionType {
+pub enum TransactionKind {
     Transfer,
     Deposit,
     Withdrawal,
@@ -80,11 +85,13 @@ pub enum TransactionStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, FromRow)]
-pub struct TransactionRow {
+pub struct Transaction {
     id: Uuid,
-    r#type: TransactionType,
-    debitor: String,
-    creditor: String,
+    kind: TransactionKind,
+    #[sqlx(rename = "sender")]
+    from: String,
+    #[sqlx(rename = "receiver")]
+    to: String,
     asset: String,
     amount: BigDecimal,
     status: TransactionStatus,
@@ -95,12 +102,12 @@ pub struct TransactionRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, FromRow)]
-pub struct AccountRow {
+pub struct Account {
     username: String,
     asset: String,
     balance: BigDecimal,
-    pending_credit: BigDecimal,
-    pending_debit: BigDecimal,
+    incoming: BigDecimal, // funds tracked for pending deposits
+    reserved: BigDecimal, // funds reserved for pending withdrawals
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
 }
@@ -115,7 +122,7 @@ impl AccountService {
         &self,
         executor: impl Executor<'_, Database = Postgres>,
         id: Uuid,
-        r#type: TransactionType,
+        kind: TransactionKind,
         debitor: &Username,
         creditor: &Username,
         asset: &Asset,
@@ -125,10 +132,10 @@ impl AccountService {
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
             r#"
-            INSERT INTO transactions (id, type, debitor, creditor, asset, amount, status, external_id)
+            INSERT INTO transactions (id, kind, sender, receiver, asset, amount, status, external_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"#,
             id,
-            r#type as TransactionType,
+            kind as _,
             debitor.0,
             creditor.0,
             asset.0,
@@ -152,15 +159,15 @@ impl AccountService {
         &self,
         executor: impl Executor<'_, Database = Postgres>,
         id: Uuid,
-    ) -> Result<TransactionRow, AccountServiceError> {
+    ) -> Result<Transaction, AccountServiceError> {
         let res = sqlx::query_as!(
-            TransactionRow,
+            Transaction,
             r#"
             SELECT
                 id,
-                type AS "type: TransactionType",
-                debitor,
-                creditor,
+                kind AS "kind!: TransactionKind",
+                sender AS "from",
+                receiver AS "to",
                 asset,
                 amount,
                 status AS "status: TransactionStatus",
@@ -173,7 +180,7 @@ impl AccountService {
               AND status = $2 
             FOR UPDATE"#,
             id,
-            TransactionStatus::Pending as TransactionStatus,
+            TransactionStatus::Pending as _,
         )
         .fetch_optional(executor)
         .await?;
@@ -184,7 +191,7 @@ impl AccountService {
         }
     }
 
-    async fn complete_transaction(
+    async fn mark_transaction_completed(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
         id: Uuid,
@@ -195,7 +202,7 @@ impl AccountService {
             SET status = $1, 
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = $2"#,
-            TransactionStatus::Completed as TransactionStatus,
+            TransactionStatus::Completed as _,
             id,
         )
         .execute(executor)
@@ -208,7 +215,7 @@ impl AccountService {
         Ok(())
     }
 
-    async fn fail_transaction(
+    async fn mark_transaction_failed(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
         id: Uuid,
@@ -219,7 +226,7 @@ impl AccountService {
             SET status = $1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = $2"#,
-            TransactionStatus::Failed as TransactionStatus,
+            TransactionStatus::Failed as _,
             id,
         )
         .execute(executor)
@@ -232,7 +239,8 @@ impl AccountService {
         Ok(())
     }
 
-    async fn pre_debit_account(
+    /// Reserve funds for a pending withdrawal (deducts from balance, adds to pending_debit)
+    async fn reserve_funds(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
@@ -244,7 +252,7 @@ impl AccountService {
             UPDATE accounts 
             SET 
                 balance = balance - $1,
-                pending_debit = pending_debit + $1,
+                reserved = reserved + $1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE username = $2 
               AND asset = $3 
@@ -268,7 +276,8 @@ impl AccountService {
         Ok(())
     }
 
-    async fn commit_pre_debit_account(
+    /// Complete a withdrawal by releasing the reservation (removes from pending_debit)
+    async fn release_reservation(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
@@ -278,10 +287,10 @@ impl AccountService {
         let res = sqlx::query!(
             r#"
             UPDATE accounts 
-            SET pending_debit = pending_debit - $1 
+            SET reserved = reserved - $1 
             WHERE username = $2 
               AND asset = $3 
-              AND pending_debit >= $1"#,
+              AND reserved >= $1"#,
             amount,
             account.0,
             asset.0,
@@ -296,7 +305,8 @@ impl AccountService {
         Ok(())
     }
 
-    async fn abort_pre_debit_account(
+    /// Cancel a withdrawal by returning reserved funds (removes from pending_debit, returns to balance)
+    async fn cancel_reservation(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
@@ -307,12 +317,12 @@ impl AccountService {
             r#"
             UPDATE accounts 
             SET 
-                pending_debit = pending_debit - $1,
+                reserved = reserved - $1,
                 balance = balance + $1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE username = $2 
               AND asset = $3 
-              AND pending_debit >= $1"#,
+              AND reserved >= $1"#,
             amount,
             account.0,
             asset.0,
@@ -327,7 +337,8 @@ impl AccountService {
         Ok(())
     }
 
-    async fn pre_credit_account(
+    /// Track incoming funds from a deposit (adds to pending_credit)
+    async fn track_incoming(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
@@ -337,7 +348,7 @@ impl AccountService {
         let res = sqlx::query!(
             r#"
             UPDATE accounts 
-            SET pending_credit = pending_credit + $1,
+            SET incoming = incoming + $1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE username = $2 
               AND asset = $3"#,
@@ -360,7 +371,8 @@ impl AccountService {
         Ok(())
     }
 
-    async fn commit_pre_credit_account(
+    /// Accept incoming funds and add to balance (moves from pending_credit to balance)
+    async fn accept_incoming(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
@@ -370,12 +382,12 @@ impl AccountService {
         let res = sqlx::query!(
             r#"
             UPDATE accounts 
-            SET pending_credit = pending_credit - $1,
+            SET incoming = incoming - $1,
                 balance = balance + $1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE username = $2 
               AND asset = $3 
-              AND pending_credit >= $1"#,
+              AND incoming >= $1"#,
             amount,
             account.0,
             asset.0,
@@ -390,7 +402,8 @@ impl AccountService {
         Ok(())
     }
 
-    async fn abort_pre_credit_account(
+    /// Reject incoming funds (removes from pending_credit)
+    async fn reject_incoming(
         &self,
         executor: impl Executor<'_, Database = Postgres>,
         account: &Username,
@@ -400,11 +413,11 @@ impl AccountService {
         let res = sqlx::query!(
             r#"
             UPDATE accounts 
-            SET pending_credit = pending_credit - $1,
+            SET incoming = incoming - $1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE username = $2
               AND asset = $3 
-              AND pending_credit >= $1"#,
+              AND incoming >= $1"#,
             amount,
             account.0,
             asset.0,
@@ -462,7 +475,7 @@ impl AccountService {
     ) -> Result<(), AccountServiceError> {
         let res = sqlx::query!(
             r#"
-            INSERT INTO accounts (username, asset, balance, pending_credit, pending_debit)
+            INSERT INTO accounts (username, asset, balance, incoming, reserved)
             VALUES ($1, $2, $3, 0, 0)
             ON CONFLICT (username, asset) DO UPDATE
             SET balance = EXCLUDED.balance + $3,
@@ -481,6 +494,7 @@ impl AccountService {
         Ok(())
     }
 
+    /// Perform an internal transfer between accounts (immediate, no pending state)
     pub async fn transfer(
         &self,
         id: Uuid,
@@ -494,12 +508,12 @@ impl AccountService {
         self.insert_transaction(
             &mut *tx,
             id,
-            TransactionType::Transfer as TransactionType,
+            TransactionKind::Transfer,
             debitor,
             creditor,
             asset,
             amount,
-            TransactionStatus::Completed as TransactionStatus,
+            TransactionStatus::Completed,
             None,
         )
         .await?;
@@ -508,12 +522,12 @@ impl AccountService {
             self.insert_transaction(
                 &mut *tx,
                 id,
-                TransactionType::Fee as TransactionType,
+                TransactionKind::Fee,
                 debitor,
                 &fee_account,
                 &fee_asset,
                 fee_amount,
-                TransactionStatus::Completed as TransactionStatus,
+                TransactionStatus::Completed,
                 None,
             )
             .await?;
@@ -528,6 +542,7 @@ impl AccountService {
         Ok(())
     }
 
+    /// Start a deposit from external source (funds tracked as pending until confirmed)
     pub async fn start_deposit(
         &self,
         id: Uuid,
@@ -540,59 +555,62 @@ impl AccountService {
         self.insert_transaction(
             &mut *tx,
             id,
-            TransactionType::Deposit as TransactionType,
-            the_outside_world(),
+            TransactionKind::Deposit,
+            &Username(EXTERNAL_ACCOUNT.to_string()),
             account,
             asset,
             amount,
-            TransactionStatus::Pending as TransactionStatus,
+            TransactionStatus::Pending,
             external_id,
         )
         .await?;
 
-        self.pre_credit_account(&mut *tx, account, asset, amount)
+        self.track_incoming(&mut *tx, account, asset, amount)
             .await?;
 
         tx.commit().await?;
         Ok(())
     }
 
-    pub async fn complete_deposit(&self, id: Uuid) -> Result<(), AccountServiceError> {
+    /// Approve a pending deposit (moves funds from pending to available balance)
+    pub async fn approve_deposit(&self, id: Uuid) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
         let transaction = self.lock_transaction(&mut *tx, id).await?;
 
-        self.commit_pre_credit_account(
+        self.accept_incoming(
             &mut *tx,
-            &Username(transaction.creditor.clone()),
+            &Username(transaction.to.clone()),
             &Asset(transaction.asset.clone()),
             &transaction.amount,
         )
         .await?;
 
-        self.complete_transaction(&mut *tx, id).await?;
+        self.mark_transaction_completed(&mut *tx, id).await?;
 
         tx.commit().await?;
         Ok(())
     }
 
-    pub async fn fail_deposit(&self, id: Uuid) -> Result<(), AccountServiceError> {
+    /// Reject a pending deposit (cancels the pending credit)
+    pub async fn reject_deposit(&self, id: Uuid) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
         let transaction = self.lock_transaction(&mut *tx, id).await?;
 
-        self.abort_pre_credit_account(
+        self.reject_incoming(
             &mut *tx,
-            &Username(transaction.creditor.clone()),
+            &Username(transaction.to.clone()),
             &Asset(transaction.asset.clone()),
             &transaction.amount,
         )
         .await?;
 
-        self.fail_transaction(&mut *tx, id).await?;
+        self.mark_transaction_failed(&mut *tx, id).await?;
 
         tx.commit().await?;
         Ok(())
     }
 
+    /// Start a withdrawal to external destination (reserves funds from balance)
     pub async fn start_withdrawal(
         &self,
         id: Uuid,
@@ -604,48 +622,49 @@ impl AccountService {
         self.insert_transaction(
             &mut *tx,
             id,
-            TransactionType::Withdrawal as TransactionType,
+            TransactionKind::Withdrawal,
             account,
-            the_outside_world(),
+            &Username(EXTERNAL_ACCOUNT.to_string()),
             asset,
             amount,
-            TransactionStatus::Pending as TransactionStatus,
+            TransactionStatus::Pending,
             None,
         )
         .await?;
 
-        self.pre_debit_account(&mut *tx, account, asset, amount)
-            .await?;
+        self.reserve_funds(&mut *tx, account, asset, amount).await?;
 
         tx.commit().await?;
         Ok(())
     }
 
-    pub async fn complete_withdrawal(&self, id: Uuid) -> Result<(), AccountServiceError> {
+    /// Approve a pending withdrawal (completes the fund reservation)
+    pub async fn approve_withdrawal(&self, id: Uuid) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
         let transaction = self.lock_transaction(&mut *tx, id).await?;
 
-        self.commit_pre_debit_account(
+        self.release_reservation(
             &mut *tx,
-            &Username(transaction.debitor.clone()),
+            &Username(transaction.from.clone()),
             &Asset(transaction.asset.clone()),
             &transaction.amount,
         )
         .await?;
 
-        self.complete_transaction(&mut *tx, id).await?;
+        self.mark_transaction_completed(&mut *tx, id).await?;
 
         tx.commit().await?;
         Ok(())
     }
 
-    pub async fn fail_withdrawal(&self, id: Uuid) -> Result<(), AccountServiceError> {
+    /// Reject a pending withdrawal (returns reserved funds to balance)
+    pub async fn reject_withdrawal(&self, id: Uuid) -> Result<(), AccountServiceError> {
         let mut tx = self.db.begin().await?;
         let transaction = self.lock_transaction(&mut *tx, id).await?;
 
-        self.abort_pre_debit_account(
+        self.cancel_reservation(
             &mut *tx,
-            &Username(transaction.debitor.clone()),
+            &Username(transaction.from.clone()),
             &Asset(transaction.asset.clone()),
             &transaction.amount,
         )
@@ -659,9 +678,9 @@ impl AccountService {
         &self,
         account: &Username,
         asset: &Asset,
-    ) -> Result<Option<AccountRow>, AccountServiceError> {
+    ) -> Result<Option<Account>, AccountServiceError> {
         let res = sqlx::query_as!(
-            AccountRow,
+            Account,
             r#"SELECT * FROM accounts WHERE username = $1 AND asset = $2"#,
             account.0,
             asset.0,
@@ -675,9 +694,9 @@ impl AccountService {
     pub async fn get_account(
         &self,
         account: &Username,
-    ) -> Result<BTreeMap<Asset, AccountRow>, AccountServiceError> {
-        let res: Vec<AccountRow> = sqlx::query_as!(
-            AccountRow,
+    ) -> Result<BTreeMap<Asset, Account>, AccountServiceError> {
+        let res: Vec<Account> = sqlx::query_as!(
+            Account,
             r#"SELECT * FROM accounts WHERE username = $1"#,
             account.0,
         )
@@ -706,12 +725,12 @@ impl AccountService {
                 balance_discrepancy: row
                     .balance_discrepancy
                     .expect("balance_discrepancy is not null"),
-                pending_debit_discrepancy: row
-                    .pending_debit_discrepancy
-                    .expect("pending_debit_discrepancy is not null"),
-                pending_credit_discrepancy: row
-                    .pending_credit_discrepancy
-                    .expect("pending_credit_discrepancy is not null"),
+                reserved_discrepancy: row
+                    .reserved_discrepancy
+                    .expect("reserved_discrepancy is not null"),
+                incoming_discrepancy: row
+                    .incoming_discrepancy
+                    .expect("incoming_discrepancy is not null"),
             })
             .collect();
 

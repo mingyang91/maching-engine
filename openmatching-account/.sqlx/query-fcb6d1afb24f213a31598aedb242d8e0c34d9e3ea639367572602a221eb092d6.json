@@ -20,12 +20,12 @@
       },
       {
         "ordinal": 3,
-        "name": "pending_debit_discrepancy",
+        "name": "reserved_discrepancy",
         "type_info": "Numeric"
       },
       {
         "ordinal": 4,
-        "name": "pending_credit_discrepancy",
+        "name": "incoming_discrepancy",
         "type_info": "Numeric"
       }
     ],

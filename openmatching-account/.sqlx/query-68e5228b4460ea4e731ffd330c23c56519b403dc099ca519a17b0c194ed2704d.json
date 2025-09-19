@@ -20,12 +20,12 @@
       },
       {
         "ordinal": 3,
-        "name": "pending_credit",
+        "name": "reserved",
         "type_info": "Numeric"
       },
       {
         "ordinal": 4,
-        "name": "pending_debit",
+        "name": "incoming",
         "type_info": "Numeric"
       },
       {

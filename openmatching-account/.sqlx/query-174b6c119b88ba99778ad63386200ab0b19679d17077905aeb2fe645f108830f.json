@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE accounts \n            SET incoming = incoming + $1,\n                updated_at = CURRENT_TIMESTAMP\n            WHERE username = $2 \n              AND asset = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Numeric",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "174b6c119b88ba99778ad63386200ab0b19679d17077905aeb2fe645f108830f"
+}

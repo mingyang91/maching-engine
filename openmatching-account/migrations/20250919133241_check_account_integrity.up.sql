@@ -5,8 +5,8 @@ RETURNS TABLE (
     username TEXT,
     asset TEXT,
     balance_discrepancy NUMERIC,
-    pending_debit_discrepancy NUMERIC,
-    pending_credit_discrepancy NUMERIC
+    reserved_discrepancy NUMERIC,
+    incoming_discrepancy NUMERIC
 ) AS $$
 BEGIN
     RETURN QUERY
@@ -22,9 +22,9 @@ BEGIN
             SUM(CASE WHEN type = 'debit' AND status = 'pending' THEN amount ELSE 0 END) as pending_d,
             SUM(CASE WHEN type = 'credit' AND status = 'pending' THEN amount ELSE 0 END) as pending_c
         FROM (
-            SELECT creditor as account, asset, amount, 'credit' as type, status FROM transactions
+            SELECT receiver as account, asset, amount, 'credit' as type, status FROM transactions
             UNION ALL
-            SELECT debitor as account, asset, amount, 'debit' as type, status FROM transactions
+            SELECT sender as account, asset, amount, 'debit' as type, status FROM transactions
         ) t
         GROUP BY account, asset
     )
@@ -32,12 +32,12 @@ BEGIN
         a.username,
         a.asset,
         a.balance - COALESCE(t.net_balance, 0),
-        a.pending_debit - COALESCE(t.pending_d, 0),
-        a.pending_credit - COALESCE(t.pending_c, 0)
+        a.reserved - COALESCE(t.pending_d, 0),
+        a.incoming - COALESCE(t.pending_c, 0)
     FROM accounts a
     LEFT JOIN tx_summary t ON a.username = t.account AND a.asset = t.asset
     WHERE a.balance <> COALESCE(t.net_balance, 0)
-       OR a.pending_debit <> COALESCE(t.pending_d, 0)
-       OR a.pending_credit <> COALESCE(t.pending_c, 0);
+       OR a.reserved <> COALESCE(t.pending_d, 0)
+       OR a.incoming <> COALESCE(t.pending_c, 0);
 END;
 $$ LANGUAGE plpgsql;

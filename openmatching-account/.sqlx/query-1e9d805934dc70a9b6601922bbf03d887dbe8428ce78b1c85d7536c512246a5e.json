@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE accounts \n            SET reserved = reserved - $1 \n            WHERE username = $2 \n              AND asset = $3 \n              AND reserved >= $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Numeric",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1e9d805934dc70a9b6601922bbf03d887dbe8428ce78b1c85d7536c512246a5e"
+}

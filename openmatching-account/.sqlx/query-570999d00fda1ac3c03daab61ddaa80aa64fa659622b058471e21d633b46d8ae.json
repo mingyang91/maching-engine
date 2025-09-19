@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO transactions (id, type, debitor, creditor, asset, amount, status, external_id)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+  "query": "\n            INSERT INTO transactions (id, kind, sender, receiver, asset, amount, status, external_id)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
   "describe": {
     "columns": [],
     "parameters": {
@@ -8,7 +8,7 @@
         "Uuid",
         {
           "Custom": {
-            "name": "transaction_type",
+            "name": "transaction_kind",
             "kind": {
               "Enum": [
                 "transfer",
@@ -40,5 +40,5 @@
     },
     "nullable": []
   },
-  "hash": "8d729ed391d2ebe81b2717eb09116bf029e0d2b81ce55cb24ec61eb0c6914c68"
+  "hash": "570999d00fda1ac3c03daab61ddaa80aa64fa659622b058471e21d633b46d8ae"
 }

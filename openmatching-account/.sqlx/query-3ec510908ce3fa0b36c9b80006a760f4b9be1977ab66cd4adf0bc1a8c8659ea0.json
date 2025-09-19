@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO accounts (username, asset, balance, incoming, reserved)\n            VALUES ($1, $2, $3, 0, 0)\n            ON CONFLICT (username, asset) DO UPDATE\n            SET balance = EXCLUDED.balance + $3,\n                updated_at = CURRENT_TIMESTAMP",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Numeric"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3ec510908ce3fa0b36c9b80006a760f4b9be1977ab66cd4adf0bc1a8c8659ea0"
+}
