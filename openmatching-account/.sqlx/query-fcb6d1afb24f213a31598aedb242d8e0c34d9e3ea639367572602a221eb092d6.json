@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM check_account_integrity()",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "asset",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "balance_discrepancy",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 3,
+        "name": "pending_debit_discrepancy",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 4,
+        "name": "pending_credit_discrepancy",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "fcb6d1afb24f213a31598aedb242d8e0c34d9e3ea639367572602a221eb092d6"
+}

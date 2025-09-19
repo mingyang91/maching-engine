@@ -12,7 +12,7 @@ fn the_outside_world() -> &'static Username {
 
 #[derive(thiserror::Error, Debug)]
 pub enum AccountServiceError {
-    #[error("db error")]
+    #[error("db error: {0}")]
     DB(#[from] sqlx::Error),
     #[error("insufficient balance for {1:?}@{0:?}")]
     InsufficientBalance(Username, Asset),
@@ -24,6 +24,32 @@ pub enum AccountServiceError {
     TransactionNotFound(Uuid),
     #[error("illegal state")]
     IllegalState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+struct CheckAccountIntegrityResult {
+    username: Option<String>,
+    asset: Option<String>,
+    balance_discrepancy: Option<BigDecimal>,
+    pending_debit_discrepancy: Option<BigDecimal>,
+    pending_credit_discrepancy: Option<BigDecimal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountIntegrityResult {
+    username: String,
+    asset: String,
+    balance_discrepancy: BigDecimal,
+    pending_debit_discrepancy: BigDecimal,
+    pending_credit_discrepancy: BigDecimal,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum AccountIntegrityError {
+    #[error("account book balance discrepancy: {0:?}")]
+    AccountBookBalanceDiscrepancy(Vec<AccountIntegrityResult>),
+    #[error("db error: {0}")]
+    DB(#[from] sqlx::Error),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
@@ -662,6 +688,38 @@ impl AccountService {
             .into_iter()
             .map(|row| (Asset(row.asset.clone()), row))
             .collect())
+    }
+
+    pub async fn check_account_integrity(&self) -> Result<(), AccountIntegrityError> {
+        let res: Vec<CheckAccountIntegrityResult> = sqlx::query_as!(
+            CheckAccountIntegrityResult,
+            r#"SELECT * FROM check_account_integrity()"#,
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        let res: Vec<AccountIntegrityResult> = res
+            .into_iter()
+            .map(|row| AccountIntegrityResult {
+                username: row.username.expect("username is not null"),
+                asset: row.asset.expect("asset is not null"),
+                balance_discrepancy: row
+                    .balance_discrepancy
+                    .expect("balance_discrepancy is not null"),
+                pending_debit_discrepancy: row
+                    .pending_debit_discrepancy
+                    .expect("pending_debit_discrepancy is not null"),
+                pending_credit_discrepancy: row
+                    .pending_credit_discrepancy
+                    .expect("pending_credit_discrepancy is not null"),
+            })
+            .collect();
+
+        if res.is_empty() {
+            Ok(())
+        } else {
+            Err(AccountIntegrityError::AccountBookBalanceDiscrepancy(res))
+        }
     }
 }
 
