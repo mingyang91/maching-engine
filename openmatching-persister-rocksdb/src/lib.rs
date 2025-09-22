@@ -55,21 +55,21 @@ impl RocksdbPersister {
         Asyncify::new(RocksdbPersister::new(path))
     }
 
-    fn all_orders_cf(&self) -> rocksdb::ColumnFamilyRef {
+    fn all_orders_cf(&self) -> rocksdb::ColumnFamilyRef<'_> {
         self.inner
             .db
             .cf_handle("all_orders")
             .expect("failed to get cf handle")
     }
 
-    fn buys_cf(&self) -> rocksdb::ColumnFamilyRef {
+    fn buys_cf(&self) -> rocksdb::ColumnFamilyRef<'_> {
         self.inner
             .db
             .cf_handle("buys")
             .expect("failed to get cf handle")
     }
 
-    fn sells_cf(&self) -> rocksdb::ColumnFamilyRef {
+    fn sells_cf(&self) -> rocksdb::ColumnFamilyRef<'_> {
         self.inner
             .db
             .cf_handle("sells")
@@ -77,7 +77,7 @@ impl RocksdbPersister {
     }
 
     #[allow(dead_code)]
-    fn meta_cf(&self) -> rocksdb::ColumnFamilyRef {
+    fn meta_cf(&self) -> rocksdb::ColumnFamilyRef<'_> {
         self.inner
             .db
             .cf_handle("meta")
