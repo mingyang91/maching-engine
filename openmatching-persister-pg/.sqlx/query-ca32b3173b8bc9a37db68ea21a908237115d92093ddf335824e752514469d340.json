@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                SELECT * FROM sell_orders \n                WHERE status IN (0, 1)\n                ORDER BY limit_price ASC, created_at\n                ",
+  "query": "SELECT * FROM orders WHERE key = $1",
   "describe": {
     "columns": [
       {
@@ -10,47 +10,74 @@
       },
       {
         "ordinal": 1,
-        "name": "status",
+        "name": "side",
         "type_info": "Int2"
       },
       {
         "ordinal": 2,
-        "name": "order_type",
+        "name": "status",
         "type_info": "Int2"
       },
       {
         "ordinal": 3,
+        "name": "order_type",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 4,
         "name": "limit_price",
         "type_info": "Float4"
       },
       {
-        "ordinal": 4,
-        "name": "total_quantity",
-        "type_info": "Int8"
-      },
-      {
         "ordinal": 5,
-        "name": "remaining_quantity",
-        "type_info": "Int8"
+        "name": "total_funds",
+        "type_info": "Float4"
       },
       {
         "ordinal": 6,
-        "name": "total_proceeds",
+        "name": "funds_remaining",
         "type_info": "Float4"
       },
       {
         "ordinal": 7,
+        "name": "target_quantity",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "filled_quantity",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "total_quantity",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "remaining_quantity",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "total_proceeds",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Uuid"
+      ]
     },
     "nullable": [
       false,
@@ -58,11 +85,16 @@
       false,
       false,
       false,
-      false,
-      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
       true,
       true
     ]
   },
-  "hash": "71123f12a9503baa9467dfe0e0fbc87c2403a29a744a83b879f34d5784a48abf"
+  "hash": "ca32b3173b8bc9a37db68ea21a908237115d92093ddf335824e752514469d340"
 }

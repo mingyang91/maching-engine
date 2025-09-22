@@ -1,45 +1,50 @@
--- Clean, simple, separated tables for Buy and Sell orders
+-- Single table for atomic operations with clean Buy/Sell separation
+-- Best of both worlds: atomicity + performance + type safety
 
--- Buy orders table - tracks MONEY
-CREATE TABLE buy_orders(
+CREATE TABLE orders(
     key uuid PRIMARY KEY,
+    side SMALLINT NOT NULL,             -- 0=BUY, 1=SELL
     status SMALLINT NOT NULL,           -- 0=Open, 1=PartiallyFilled, 2=Filled, 3=Cancelled
     order_type SMALLINT NOT NULL,       -- 0=Limit, 1=Market
-    limit_price REAL NOT NULL,          -- Max price per unit (0 for market orders)
-    total_funds REAL NOT NULL,          -- Total money allocated for buying
-    funds_remaining REAL NOT NULL,      -- Money still available
-    target_quantity BIGINT NOT NULL,    -- Desired quantity to buy
-    filled_quantity BIGINT NOT NULL DEFAULT 0, -- Quantity already bought
+    
+    -- Common price field (different meaning for buy vs sell)
+    limit_price REAL NOT NULL,          -- Buy: max price, Sell: min price, 0 for market
+    
+    -- Buy-specific fields (used when side=0)
+    total_funds REAL,                   -- Total money allocated for buying
+    funds_remaining REAL,               -- Money still available
+    target_quantity BIGINT,             -- Desired quantity to buy
+    filled_quantity BIGINT,             -- Quantity already bought
+    
+    -- Sell-specific fields (used when side=1)
+    total_quantity BIGINT,              -- Total shares to sell
+    remaining_quantity BIGINT,          -- Shares still available
+    total_proceeds REAL,                -- Money earned from sales
+    
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    -- Ensure data integrity
+    CONSTRAINT chk_buy_fields CHECK (
+        side != 0 OR (total_funds IS NOT NULL AND funds_remaining IS NOT NULL 
+                      AND target_quantity IS NOT NULL AND filled_quantity IS NOT NULL)
+    ),
+    CONSTRAINT chk_sell_fields CHECK (
+        side != 1 OR (total_quantity IS NOT NULL AND remaining_quantity IS NOT NULL 
+                      AND total_proceeds IS NOT NULL)
+    )
 );
 
--- Sell orders table - tracks SHARES
-CREATE TABLE sell_orders(
-    key uuid PRIMARY KEY,
-    status SMALLINT NOT NULL,           -- 0=Open, 1=PartiallyFilled, 2=Filled, 3=Cancelled
-    order_type SMALLINT NOT NULL,       -- 0=Limit, 1=Market
-    limit_price REAL NOT NULL,          -- Min price per unit (0 for market orders)
-    total_quantity BIGINT NOT NULL,     -- Total shares to sell
-    remaining_quantity BIGINT NOT NULL, -- Shares still available to sell
-    total_proceeds REAL NOT NULL DEFAULT 0, -- Money earned from sales
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
+-- Indexes for buy orders (high to low price for matching)
+CREATE INDEX idx_orders_buy_active ON orders(status)
+WHERE side = 0 AND status IN (0, 1);
 
--- Indexes for buy orders (sorted high to low for matching)
-CREATE INDEX idx_buy_orders_active ON buy_orders(status)
-WHERE status IN (0, 1); -- Open or PartiallyFilled
+CREATE INDEX idx_orders_buy_matching ON orders(limit_price DESC, created_at)
+WHERE side = 0 AND status IN (0, 1);
 
-CREATE INDEX idx_buy_orders_matching ON buy_orders(limit_price DESC, created_at)
-WHERE status IN (0, 1);
+-- Indexes for sell orders (low to high price for matching)
+CREATE INDEX idx_orders_sell_active ON orders(status)
+WHERE side = 1 AND status IN (0, 1);
 
--- Indexes for sell orders (sorted low to high for matching)
-CREATE INDEX idx_sell_orders_active ON sell_orders(status)
-WHERE status IN (0, 1); -- Open or PartiallyFilled
-
-CREATE INDEX idx_sell_orders_matching ON sell_orders(limit_price ASC, created_at)
-WHERE status IN (0, 1);
-
--- No triggers needed - keep it simple
--- The application can update timestamps if needed
+CREATE INDEX idx_orders_sell_matching ON orders(limit_price ASC, created_at)
+WHERE side = 1 AND status IN (0, 1);

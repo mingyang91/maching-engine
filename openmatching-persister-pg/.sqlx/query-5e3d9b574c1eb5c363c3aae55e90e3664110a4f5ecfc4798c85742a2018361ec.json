@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT * FROM buy_orders WHERE key = $1",
+  "query": "\n                SELECT * FROM orders \n                WHERE side = 1 AND status IN (0, 1)\n                ORDER BY limit_price ASC, created_at\n                ",
   "describe": {
     "columns": [
       {
@@ -10,54 +10,72 @@
       },
       {
         "ordinal": 1,
-        "name": "status",
+        "name": "side",
         "type_info": "Int2"
       },
       {
         "ordinal": 2,
-        "name": "order_type",
+        "name": "status",
         "type_info": "Int2"
       },
       {
         "ordinal": 3,
+        "name": "order_type",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 4,
         "name": "limit_price",
         "type_info": "Float4"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "total_funds",
         "type_info": "Float4"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "funds_remaining",
         "type_info": "Float4"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "target_quantity",
         "type_info": "Int8"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "filled_quantity",
         "type_info": "Int8"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
+        "name": "total_quantity",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "remaining_quantity",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "total_proceeds",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 9,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
-      "Left": [
-        "Uuid"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
@@ -65,12 +83,16 @@
       false,
       false,
       false,
-      false,
-      false,
-      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
       true,
       true
     ]
   },
-  "hash": "d8d310053cab2c5c3de851bcff21ccc8a447c3cc53d1112621296f034e3732ac"
+  "hash": "5e3d9b574c1eb5c363c3aae55e90e3664110a4f5ecfc4798c85742a2018361ec"
 }
