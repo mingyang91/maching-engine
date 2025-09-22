@@ -117,6 +117,7 @@ impl Persister for RocksdbPersister {
 
     fn get_order(
         &self,
+        _side: Side,
         key: openmatching::protos::TimebasedKey,
     ) -> Result<Option<openmatching::protos::Order>, Self::Error> {
         let cf = self.all_orders_cf();

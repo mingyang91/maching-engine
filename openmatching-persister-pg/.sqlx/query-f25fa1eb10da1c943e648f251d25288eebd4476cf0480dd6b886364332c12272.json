@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT * FROM buy_orders \n                WHERE status IN (0, 1)\n                ORDER BY limit_price DESC, created_at\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "order_type",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 3,
+        "name": "limit_price",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 4,
+        "name": "total_funds",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 5,
+        "name": "funds_remaining",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 6,
+        "name": "target_quantity",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "filled_quantity",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "f25fa1eb10da1c943e648f251d25288eebd4476cf0480dd6b886364332c12272"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO sell_orders (\n                    key, status, order_type, limit_price,\n                    total_quantity, remaining_quantity, total_proceeds\n                )\n                SELECT * FROM UNNEST(\n                    $1::uuid[], $2::smallint[], $3::smallint[], $4::real[],\n                    $5::bigint[], $6::bigint[], $7::real[]\n                )\n                ON CONFLICT (key) DO UPDATE SET\n                    status = EXCLUDED.status,\n                    remaining_quantity = EXCLUDED.remaining_quantity,\n                    total_proceeds = EXCLUDED.total_proceeds,\n                    updated_at = NOW()\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Int2Array",
+        "Int2Array",
+        "Float4Array",
+        "Int8Array",
+        "Int8Array",
+        "Float4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b401855ab19fcabba33d9af8d1b607690ba548fd6130403bce32dff058c5c810"
+}

@@ -1,212 +1,277 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc};
 
 use openmatching::{
     persister::AsyncPersister,
-    protos::{Order, OrderStatus, Side, TimebasedKey},
+    protos::{BuyOrder, Order, SellOrder, Side, TimebasedKey, order},
 };
 use sqlx::{Pool, Postgres};
-use tokio::{
-    select,
-    sync::{mpsc, oneshot},
-};
-use uuid::Uuid;
+use tokio::sync::mpsc;
 
-#[derive(thiserror::Error, Debug, Clone)]
-pub enum PgPersisterError {
-    #[error("db error")]
-    DB(#[from] Arc<sqlx::Error>),
-    #[error("channel closed")]
-    ChannelClosed,
-}
-
-enum Command {
-    Upsert {
-        reply: oneshot::Sender<Result<(), PgPersisterError>>,
-        orders: Vec<Order>,
-    },
-    Close,
+#[derive(Clone)]
+pub struct PostgresPersister {
+    inner: Arc<Inner>,
 }
 
 struct Inner {
     pool: Pool<Postgres>,
-    tx: mpsc::Sender<Command>,
+    cmd_tx: mpsc::Sender<PersisteCommand>,
 }
 
-type RowsTuple = (
-    Vec<Uuid>,
-    (Vec<f32>, Vec<i64>, Vec<i64>, Vec<i16>, Vec<i16>, Vec<i16>),
-);
+enum PersisteCommand {
+    Upsert(BTreeMap<TimebasedKey, Order>),
+    Abort,
+}
 
-impl Inner {
-    async fn upsert_order(&self, orders: Vec<Order>) -> Result<(), PgPersisterError> {
-        let orders = orders
-            .into_iter()
-            .map(|o| {
-                let key: TimebasedKey = o.key.expect("key should be present").into();
-                let key_uuid = uuid::Uuid::from_bytes(key.to_bytes());
-                (key_uuid, o)
-            })
-            .collect::<BTreeMap<_, _>>();
-        let (keys, (prices, quantities, remaining, sides, statuses, order_types)): RowsTuple =
-            orders
-                .values()
-                .map(|o| {
-                    let key: TimebasedKey = o.key.expect("key should be present").into();
-                    let key_uuid = uuid::Uuid::from_bytes(key.to_bytes());
-                    (
+impl PostgresPersister {
+    async fn background_persist(pool: Pool<Postgres>, mut cmd_rx: mpsc::Receiver<PersisteCommand>) {
+        while let Some(cmd) = cmd_rx.recv().await {
+            match cmd {
+                PersisteCommand::Upsert(orders) => {
+                    if let Err(e) = Self::upsert_impl(pool.clone(), orders).await {
+                        tracing::error!("failed to upsert orders: {e:?}");
+                    }
+                }
+                PersisteCommand::Abort => break,
+            }
+        }
+    }
+
+    async fn upsert_impl(
+        pool: Pool<Postgres>,
+        orders: BTreeMap<TimebasedKey, Order>,
+    ) -> Result<(), sqlx::Error> {
+        // Separate buy and sell orders
+        let mut buy_orders = Vec::new();
+        let mut sell_orders = Vec::new();
+
+        for o in orders.values() {
+            let key: TimebasedKey = o.key.expect("key should be present").into();
+            let key_uuid = uuid::Uuid::from_bytes(key.to_bytes());
+
+            match &o.side_data {
+                Some(order::SideData::Buy(buy)) => {
+                    buy_orders.push((
                         key_uuid,
                         (
-                            key.get_price(),
-                            o.quantity as i64,
-                            o.remaining as i64,
-                            o.side as i16,
-                            o.status as i16,
-                            o.order_type as i16,
+                            o.status() as i16,
+                            buy.order_type() as i16,
+                            buy.limit_price,
+                            buy.total_funds,
+                            buy.funds_remaining,
+                            buy.target_quantity as i64,
+                            buy.filled_quantity as i64,
                         ),
-                    )
-                })
-                .unzip();
-        let pool = self.pool.clone();
-        let mut tx = pool.begin().await.map_err(Arc::new)?;
-        let res = sqlx::query!(
+                    ));
+                }
+                Some(order::SideData::Sell(sell)) => {
+                    sell_orders.push((
+                        key_uuid,
+                        (
+                            o.status() as i16,
+                            sell.order_type() as i16,
+                            sell.limit_price,
+                            sell.total_quantity as i64,
+                            sell.remaining_quantity as i64,
+                            sell.total_proceeds,
+                        ),
+                    ));
+                }
+                None => panic!("Order must have side_data"),
+            }
+        }
+
+        let mut tx = pool.begin().await?;
+
+        // Insert/update buy orders
+        if !buy_orders.is_empty() {
+            let (
+                keys,
+                (
+                    statuses,
+                    order_types,
+                    limit_prices,
+                    total_funds,
+                    funds_remaining,
+                    target_quantities,
+                    filled_quantities,
+                ),
+            ): (
+                Vec<_>,
+                (Vec<_>, Vec<_>, Vec<_>, Vec<_>, Vec<_>, Vec<_>, Vec<_>),
+            ) = buy_orders.into_iter().unzip();
+
+            sqlx::query!(
                 r#"
-                INSERT INTO all_orders (key, price, quantity, remaining, side, status, order_type)
-                SELECT * FROM unnest($1::uuid[], $2::real[], $3::bigint[], $4::bigint[], $5::smallint[], $6::smallint[], $7::smallint[])
-                ON CONFLICT (key) DO UPDATE SET 
-                    price = EXCLUDED.price, 
-                    quantity = EXCLUDED.quantity, 
-                    remaining = EXCLUDED.remaining, 
-                    side = EXCLUDED.side, 
+                INSERT INTO buy_orders (
+                    key, status, order_type, limit_price,
+                    total_funds, funds_remaining,
+                    target_quantity, filled_quantity
+                )
+                SELECT * FROM UNNEST(
+                    $1::uuid[], $2::smallint[], $3::smallint[], $4::real[],
+                    $5::real[], $6::real[], $7::bigint[], $8::bigint[]
+                )
+                ON CONFLICT (key) DO UPDATE SET
                     status = EXCLUDED.status,
-                    order_type = EXCLUDED.order_type;
+                    funds_remaining = EXCLUDED.funds_remaining,
+                    filled_quantity = EXCLUDED.filled_quantity,
+                    updated_at = NOW()  -- Explicitly set in query
                 "#,
                 &keys,
-                &prices,
-                &quantities,
-                &remaining,
-                &sides,
                 &statuses,
                 &order_types,
+                &limit_prices,
+                &total_funds,
+                &funds_remaining,
+                &target_quantities,
+                &filled_quantities,
             )
             .execute(&mut *tx)
-            .await.map_err(Arc::new)?;
-        tracing::debug!("upserted {} orders", res.rows_affected());
-        tx.commit().await.map_err(Arc::new)?;
+            .await?;
+        }
+
+        // Insert/update sell orders
+        if !sell_orders.is_empty() {
+            let (
+                keys,
+                (
+                    statuses,
+                    order_types,
+                    limit_prices,
+                    total_quantities,
+                    remaining_quantities,
+                    total_proceeds,
+                ),
+            ): (Vec<_>, (Vec<_>, Vec<_>, Vec<_>, Vec<_>, Vec<_>, Vec<_>)) =
+                sell_orders.into_iter().unzip();
+
+            sqlx::query!(
+                r#"
+                INSERT INTO sell_orders (
+                    key, status, order_type, limit_price,
+                    total_quantity, remaining_quantity, total_proceeds
+                )
+                SELECT * FROM UNNEST(
+                    $1::uuid[], $2::smallint[], $3::smallint[], $4::real[],
+                    $5::bigint[], $6::bigint[], $7::real[]
+                )
+                ON CONFLICT (key) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    remaining_quantity = EXCLUDED.remaining_quantity,
+                    total_proceeds = EXCLUDED.total_proceeds,
+                    updated_at = NOW()
+                "#,
+                &keys,
+                &statuses,
+                &order_types,
+                &limit_prices,
+                &total_quantities,
+                &remaining_quantities,
+                &total_proceeds,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
         Ok(())
+    }
+
+    pub async fn new(database_url: &str) -> Result<Self, sqlx::Error> {
+        let pool = Pool::<Postgres>::connect(database_url).await?;
+        sqlx::migrate!().run(&pool).await?;
+
+        let (cmd_tx, cmd_rx) = mpsc::channel(100);
+        tokio::spawn(Self::background_persist(pool.clone(), cmd_rx));
+
+        Ok(Self {
+            inner: Arc::new(Inner { pool, cmd_tx }),
+        })
     }
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        while self.tx.try_send(Command::Close).is_err() && !self.tx.is_closed() {}
+        while self.cmd_tx.try_send(PersisteCommand::Abort).is_err() && !self.cmd_tx.is_closed() {}
     }
 }
 
-#[derive(Clone)]
-pub struct PgPersister {
-    inner: Arc<Inner>,
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum PgPersisterCreateError {
-    #[error("db error")]
-    DB(#[from] sqlx::Error),
-    #[error("migrate error")]
-    Migrate(#[from] sqlx::migrate::MigrateError),
-}
-
-impl PgPersister {
-    pub async fn new(url: &str) -> Result<Self, PgPersisterCreateError> {
-        let pool = Pool::connect(url).await?;
-        let migrator = sqlx::migrate!("./migrations");
-        migrator.run(&pool).await?;
-        let (tx, mut rx) = mpsc::channel(65535);
-        let inner = Arc::new(Inner { pool, tx });
-        let inner_clone = inner.clone();
-        tokio::spawn(async move {
-            loop {
-                let mut collected_orders = vec![];
-                let mut collected_replys = vec![];
-                let polling = async {
-                    loop {
-                        match rx.recv().await {
-                            None | Some(Command::Close) => return true,
-                            Some(Command::Upsert { reply, orders }) => {
-                                collected_orders.extend(orders);
-                                collected_replys.push(reply);
-                            }
-                        }
-                        if collected_replys.len() > 256 {
-                            return false;
-                        }
-                    }
-                };
-                select! {
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
-                    is_polling_done = polling => {
-                        if is_polling_done {
-                            break
-                        }
-                    },
-                }
-                let res = inner_clone.upsert_order(collected_orders).await;
-                for reply in collected_replys {
-                    if reply.send(res.clone()).is_err() {
-                        tracing::warn!("failed to send upsert reply");
-                    }
-                }
-            }
-        });
-        Ok(PgPersister { inner })
-    }
-}
-
-impl AsyncPersister for PgPersister {
-    type Error = PgPersisterError;
+impl AsyncPersister for PostgresPersister {
+    type Error = Arc<sqlx::Error>;
 
     fn upsert_order(
         &self,
         orders: Vec<Order>,
     ) -> impl Future<Output = Result<(), Self::Error>> + 'static {
-        let tx = self.inner.tx.clone();
+        let mut btree = BTreeMap::new();
+        for order in orders {
+            let key: TimebasedKey = order.key.expect("key should be present").into();
+            btree.insert(key, order);
+        }
+        let cmd_tx = self.inner.cmd_tx.clone();
         async move {
-            let (reply, rx) = oneshot::channel();
-            tx.send(Command::Upsert { reply, orders })
+            cmd_tx
+                .send(PersisteCommand::Upsert(btree))
                 .await
-                .map_err(|_| Self::Error::ChannelClosed)?;
-            rx.await.map_err(|_| Self::Error::ChannelClosed)?
+                .map_err(|_| Arc::new(sqlx::Error::PoolClosed))?;
+            Ok(())
         }
     }
 
     fn get_order(
         &self,
+        side: Side,
         key: TimebasedKey,
     ) -> impl Future<Output = Result<Option<Order>, Self::Error>> + 'static {
         let pool = self.inner.pool.clone();
         let key_uuid = uuid::Uuid::from_bytes(key.to_bytes());
         async move {
-            let res = sqlx::query!(
-                r#"
-                SELECT * FROM all_orders WHERE key = $1
-                "#,
-                key_uuid,
-            )
-            .fetch_optional(&pool)
-            .await
-            .map_err(Arc::new)?;
-            let Some(res) = res else {
-                return Ok(None);
-            };
-            let key: TimebasedKey = TimebasedKey::from_bytes(res.key.into_bytes());
-            let order = Order {
-                key: Some(key.into()),
-                quantity: res.quantity as u64,
-                remaining: res.remaining as u64,
-                side: res.side as i32,
-                status: res.status as i32,
-                order_type: res.order_type as i32, // TODO: add order type
-            };
-            Ok(Some(order))
+            match side {
+                Side::Buy => {
+                    if let Some(buy) =
+                        sqlx::query!(r#"SELECT * FROM buy_orders WHERE key = $1"#, key_uuid,)
+                            .fetch_optional(&pool)
+                            .await
+                            .map_err(Arc::new)?
+                    {
+                        let key: TimebasedKey = TimebasedKey::from_bytes(buy.key.into_bytes());
+                        return Ok(Some(Order {
+                            key: Some(key.into()),
+                            status: buy.status as i32,
+                            side_data: Some(order::SideData::Buy(BuyOrder {
+                                order_type: buy.order_type as i32,
+                                limit_price: buy.limit_price,
+                                total_funds: buy.total_funds,
+                                funds_remaining: buy.funds_remaining,
+                                target_quantity: buy.target_quantity as u64,
+                                filled_quantity: buy.filled_quantity as u64,
+                            })),
+                        }));
+                    }
+                }
+                Side::Sell => {
+                    if let Some(sell) =
+                        sqlx::query!(r#"SELECT * FROM sell_orders WHERE key = $1"#, key_uuid,)
+                            .fetch_optional(&pool)
+                            .await
+                            .map_err(Arc::new)?
+                    {
+                        let key: TimebasedKey = TimebasedKey::from_bytes(sell.key.into_bytes());
+                        return Ok(Some(Order {
+                            key: Some(key.into()),
+                            status: sell.status as i32,
+                            side_data: Some(order::SideData::Sell(SellOrder {
+                                order_type: sell.order_type as i32,
+                                limit_price: sell.limit_price,
+                                total_quantity: sell.total_quantity as u64,
+                                remaining_quantity: sell.remaining_quantity as u64,
+                                total_proceeds: sell.total_proceeds,
+                            })),
+                        }));
+                    }
+                }
+            }
+            Ok(None)
         }
     }
 
@@ -217,30 +282,33 @@ impl AsyncPersister for PgPersister {
         async move {
             let res = sqlx::query!(
                 r#"
-                SELECT * FROM all_orders WHERE side = $1 and status in ($2, $3)
-                "#,
-                Side::Buy as i16,
-                OrderStatus::Open as i16,
-                OrderStatus::PartiallyFilled as i16,
+                SELECT * FROM buy_orders 
+                WHERE status IN (0, 1)
+                ORDER BY limit_price DESC, created_at
+                "#
             )
             .fetch_all(&pool)
             .await
             .map_err(Arc::new)?;
-            let orders: Vec<Order> = res
-                .iter()
+
+            Ok(res
+                .into_iter()
                 .map(|r| {
                     let key: TimebasedKey = TimebasedKey::from_bytes(r.key.into_bytes());
                     Order {
                         key: Some(key.into()),
-                        quantity: r.quantity as u64,
-                        remaining: r.remaining as u64,
-                        side: r.side as i32,
                         status: r.status as i32,
-                        order_type: r.order_type as i32,
+                        side_data: Some(order::SideData::Buy(BuyOrder {
+                            order_type: r.order_type as i32,
+                            limit_price: r.limit_price,
+                            total_funds: r.total_funds,
+                            funds_remaining: r.funds_remaining,
+                            target_quantity: r.target_quantity as u64,
+                            filled_quantity: r.filled_quantity as u64,
+                        })),
                     }
                 })
-                .collect();
-            Ok(orders)
+                .collect())
         }
     }
 
@@ -251,30 +319,32 @@ impl AsyncPersister for PgPersister {
         async move {
             let res = sqlx::query!(
                 r#"
-                SELECT * FROM all_orders WHERE side = $1 and status in ($2, $3)
-                "#,
-                Side::Sell as i16,
-                OrderStatus::Open as i16,
-                OrderStatus::PartiallyFilled as i16,
+                SELECT * FROM sell_orders 
+                WHERE status IN (0, 1)
+                ORDER BY limit_price ASC, created_at
+                "#
             )
             .fetch_all(&pool)
             .await
             .map_err(Arc::new)?;
-            let orders: Vec<Order> = res
-                .iter()
+
+            Ok(res
+                .into_iter()
                 .map(|r| {
                     let key: TimebasedKey = TimebasedKey::from_bytes(r.key.into_bytes());
                     Order {
                         key: Some(key.into()),
-                        quantity: r.quantity as u64,
-                        remaining: r.remaining as u64,
-                        side: r.side as i32,
                         status: r.status as i32,
-                        order_type: r.order_type as i32,
+                        side_data: Some(order::SideData::Sell(SellOrder {
+                            order_type: r.order_type as i32,
+                            limit_price: r.limit_price,
+                            total_quantity: r.total_quantity as u64,
+                            remaining_quantity: r.remaining_quantity as u64,
+                            total_proceeds: r.total_proceeds,
+                        })),
                     }
                 })
-                .collect();
-            Ok(orders)
+                .collect())
         }
     }
 }

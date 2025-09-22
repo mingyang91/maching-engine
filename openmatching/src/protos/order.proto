@@ -3,13 +3,33 @@ import "key.proto";
 
 package matching_engine.protos;
 
+// Clean separation: Buy and Sell orders have different data
 message Order {
-    Key key = 1;
-    Side side = 2;
-    OrderType order_type = 3;
-    uint64 quantity = 4;
-    uint64 remaining = 5;
-    OrderStatus status = 6;
+    Key key = 1;                   // Order ID/timestamp
+    OrderStatus status = 2;
+    
+    // Use oneof to enforce that an order is EITHER buy OR sell
+    oneof side_data {
+        BuyOrder buy = 3;
+        SellOrder sell = 4;
+    }
+}
+
+message BuyOrder {
+    OrderType order_type = 1;      // LIMIT or MARKET
+    float limit_price = 2;         // Max price per unit (0 for MARKET)
+    float total_funds = 3;         // Total money allocated
+    float funds_remaining = 4;     // Money still available
+    uint64 target_quantity = 5;    // Desired quantity (may not get all)
+    uint64 filled_quantity = 6;    // How many actually bought
+}
+
+message SellOrder {
+    OrderType order_type = 1;      // LIMIT or MARKET  
+    float limit_price = 2;         // Min price per unit (0 for MARKET)
+    uint64 total_quantity = 3;     // Total shares to sell
+    uint64 remaining_quantity = 4; // Shares still available
+    float total_proceeds = 5;      // Money earned from sales
 }
 
 enum Side {
@@ -20,8 +40,6 @@ enum Side {
 enum OrderType {
     LIMIT = 0;
     MARKET = 1;
-    STOP = 2;
-    STOP_LIMIT = 3;
 }
 
 enum OrderStatus {

@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use openmatching::{order_book::OrderBook, protos::Order};
-use openmatching_persister_pg::{PgPersister};
+use openmatching_persister_pg::{PostgresPersister};
 
 use std::time::Instant;
 
@@ -13,12 +13,12 @@ use quickcheck::{Arbitrary, Gen};
 
 
 pub struct Server {
-    pub order_book: OrderBook<PgPersister>,
+    pub order_book: OrderBook<PostgresPersister>,
 }
 
 impl Server {
     pub async fn new() -> Self {
-        let database = PgPersister::new("postgresql://postgres:postgres@localhost:5432/postgres").await.expect("failed to create pg persister");
+        let database = PostgresPersister::new("postgresql://postgres:postgres@localhost:5432/postgres").await.expect("failed to create pg persister");
         let order_book = OrderBook::create(database).await.expect("failed to create order book");
         Self { order_book }
     }
@@ -45,7 +45,7 @@ async fn main() {
         let mut g = Gen::new(1000);
         let mut count = 0;
         let now = Instant::now();
-        for _ in 0..10000 {
+        for _ in 0..1000 {
             let orders = Vec::<Order>::arbitrary(&mut g);
             count += orders.len();
             if let Err(e) = sender.send(orders).await {

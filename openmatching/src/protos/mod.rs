@@ -99,13 +99,8 @@ impl Arbitrary for Side {
 
 impl Arbitrary for OrderType {
     fn arbitrary(g: &mut Gen) -> Self {
-        *g.choose(&[
-            OrderType::Limit,
-            OrderType::Market,
-            OrderType::Stop,
-            OrderType::StopLimit,
-        ])
-        .expect("should choose order type")
+        *g.choose(&[OrderType::Limit, OrderType::Market])
+            .expect("should choose order type")
     }
 }
 
@@ -134,18 +129,109 @@ impl Arbitrary for Key {
     }
 }
 
+// Helper methods for Order to extract common fields
+impl Order {
+    pub fn is_buy(&self) -> bool {
+        matches!(self.side_data, Some(order::SideData::Buy(_)))
+    }
+
+    pub fn is_sell(&self) -> bool {
+        matches!(self.side_data, Some(order::SideData::Sell(_)))
+    }
+
+    pub fn side(&self) -> Side {
+        if self.is_buy() { Side::Buy } else { Side::Sell }
+    }
+
+    pub fn order_type(&self) -> OrderType {
+        match &self.side_data {
+            Some(order::SideData::Buy(b)) => b.order_type(),
+            Some(order::SideData::Sell(s)) => s.order_type(),
+            None => OrderType::Limit, // default
+        }
+    }
+
+    pub fn price(&self) -> f32 {
+        match &self.side_data {
+            Some(order::SideData::Buy(b)) => b.limit_price,
+            Some(order::SideData::Sell(s)) => s.limit_price,
+            None => 0.0,
+        }
+    }
+
+    // For compatibility - returns quantity/target based on side
+    pub fn quantity(&self) -> u64 {
+        match &self.side_data {
+            Some(order::SideData::Buy(b)) => b.target_quantity,
+            Some(order::SideData::Sell(s)) => s.total_quantity,
+            None => 0,
+        }
+    }
+
+    // For compatibility - returns remaining based on side
+    pub fn remaining(&self) -> u64 {
+        match &self.side_data {
+            Some(order::SideData::Buy(b)) => b.target_quantity - b.filled_quantity,
+            Some(order::SideData::Sell(s)) => s.remaining_quantity,
+            None => 0,
+        }
+    }
+}
+
 impl Arbitrary for Order {
     fn arbitrary(g: &mut Gen) -> Self {
-        let mut quantity = log_gaussian(g, 100.0, 2.48).ceil() as u64;
-        quantity = quantity.clamp(1, 1000000);
+        let side = *g.choose(&[true, false]).unwrap(); // true = buy, false = sell
+        let order_type = OrderType::arbitrary(g);
+
+        let side_data = if side {
+            // Create BuyOrder
+            let target_quantity = log_gaussian(g, 100.0, 2.48).ceil() as u64;
+            let target_quantity = target_quantity.clamp(1, 100000);
+
+            let limit_price = match order_type {
+                OrderType::Limit => gaussian(g, 100.0, 100.0),
+                OrderType::Market => 0.0,
+            };
+
+            let total_funds = if order_type == OrderType::Market {
+                // Market buy: allocate generous funds
+                target_quantity as f32 * 200.0
+            } else {
+                // Limit buy: exact funds needed
+                target_quantity as f32 * limit_price
+            };
+
+            Some(order::SideData::Buy(BuyOrder {
+                order_type: order_type.into(),
+                limit_price,
+                total_funds,
+                funds_remaining: total_funds,
+                target_quantity,
+                filled_quantity: 0,
+            }))
+        } else {
+            // Create SellOrder
+            let total_quantity = log_gaussian(g, 100.0, 2.48).ceil() as u64;
+            let total_quantity = total_quantity.clamp(1, 100000);
+
+            let limit_price = match order_type {
+                OrderType::Limit => gaussian(g, 100.0, 100.0),
+                OrderType::Market => 0.0,
+            };
+
+            Some(order::SideData::Sell(SellOrder {
+                order_type: order_type.into(),
+                limit_price,
+                total_quantity,
+                remaining_quantity: total_quantity,
+                total_proceeds: 0.0,
+            }))
+        };
 
         Order {
             key: Some(Key::arbitrary(g)),
-            side: Side::arbitrary(g).into(),
-            order_type: OrderType::arbitrary(g).into(),
-            quantity,
-            remaining: quantity,
             status: OrderStatus::Open.into(),
+            side_data,
         }
     }
 }

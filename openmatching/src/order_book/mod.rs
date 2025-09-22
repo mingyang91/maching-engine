@@ -3,8 +3,8 @@ mod transaction;
 use std::{collections::BTreeMap, error::Error, time::Instant};
 
 use crate::{
-    persister::AsyncPersister,
     order_book::transaction::Transaction,
+    persister::AsyncPersister,
     protos::{Order, PricebasedKey, Side, TimebasedKey},
 };
 
@@ -101,7 +101,11 @@ where
     }
 
     #[allow(dead_code)]
-    pub async fn get_order(&self, key: impl Into<TimebasedKey>) -> Result<Option<Order>, P::Error> {
-        self.persister.get_order(key.into()).await
+    pub async fn get_order(
+        &self,
+        side: Side,
+        key: impl Into<TimebasedKey>,
+    ) -> Result<Option<Order>, P::Error> {
+        self.persister.get_order(side, key.into()).await
     }
 }

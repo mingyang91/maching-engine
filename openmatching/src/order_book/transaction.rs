@@ -3,7 +3,7 @@ use super::*;
 use crate::{
     borrow::DormantMutRef,
     persister::AsyncPersister,
-    protos::{Order, OrderStatus, PricebasedKey, Side, TimebasedKey},
+    protos::{Order, OrderStatus, OrderType, PricebasedKey, TimebasedKey, order::SideData},
 };
 
 pub struct Transaction<'ob, P> {
@@ -19,12 +19,35 @@ impl<'ob, P> Transaction<'ob, P> {
         }
     }
 
-    pub(super) fn add_order(&mut self, order: Order) {
-        let key: TimebasedKey = order.key.expect("key should be present").into();
-        if order.side() == Side::Buy {
-            self.order_book.buys.insert(key.to_pricebased(), order);
-        } else {
-            self.order_book.sells.insert(key.to_pricebased(), order);
+    pub(super) fn add_order(&mut self, mut order: Order) {
+        // Determine price for BTreeMap sorting based on order type
+        let price_for_key = match &order.side_data.expect("Order must be either buy or sell") {
+            SideData::Buy(buy) => {
+                match buy.order_type() {
+                    OrderType::Market => f32::INFINITY, // Market buy at any price
+                    OrderType::Limit => buy.limit_price,
+                }
+            }
+            SideData::Sell(sell) => {
+                match sell.order_type() {
+                    OrderType::Market => 0.0, // Market sell at any price
+                    OrderType::Limit => sell.limit_price,
+                }
+            }
+        };
+
+        // Create key with price for sorting
+        let key = TimebasedKey::new(price_for_key);
+        order.key = Some(key.into());
+
+        // Add to appropriate side of order book
+        match &order.side_data.expect("Order must be either buy or sell") {
+            SideData::Buy(_) => {
+                self.order_book.buys.insert(key.to_pricebased(), order);
+            }
+            SideData::Sell(_) => {
+                self.order_book.sells.insert(key.to_pricebased(), order);
+            }
         }
         self.updates.push(order);
     }
@@ -91,41 +114,118 @@ impl<'ob, P> Transaction<'ob, P> {
         None
     }
 
+    /// Clean matching for separated Buy/Sell order types
     pub(super) fn run_matching(&mut self) {
         let mut last_price = self.order_book.last_price;
-        {
+
+        loop {
+            // Get best orders from each side
             let Some(mut buy_ref) = self.best_buy() else {
-                return;
+                break;
             };
             let Some(mut sell_ref) = self.best_sell() else {
-                return;
+                drop(buy_ref);
+                break;
             };
 
-            loop {
-                if buy_ref.key.get_price() < sell_ref.key.get_price() {
-                    break;
+            // Extract buy and sell data
+            let SideData::Buy(buy_data) = &buy_ref
+                .order
+                .side_data
+                .expect("Buy side should have buy data")
+            else {
+                unreachable!("Buy side should have buy data");
+            };
+            let SideData::Sell(sell_data) = &sell_ref
+                .order
+                .side_data
+                .expect("Sell side should have sell data")
+            else {
+                unreachable!("Sell side should have sell data");
+            };
+
+            // Determine if orders can match
+            let can_match = match (buy_data.order_type(), sell_data.order_type()) {
+                // Market orders always match
+                (OrderType::Market, _) | (_, OrderType::Market) => true,
+                // Limit orders match when buy limit >= sell limit
+                (OrderType::Limit, OrderType::Limit) => {
+                    buy_data.limit_price >= sell_data.limit_price
                 }
+            };
 
-                let quantity = buy_ref.order.remaining.min(sell_ref.order.remaining);
-
-                buy_ref.order.remaining -= quantity;
-                sell_ref.order.remaining -= quantity;
-                if buy_ref.order.remaining == 0 {
-                    let Some(next_buy_ref) = self.best_buy() else {
-                        break;
-                    };
-                    buy_ref = next_buy_ref;
-                }
-
-                if sell_ref.order.remaining == 0 {
-                    let Some(next_sell_ref) = self.best_sell() else {
-                        break;
-                    };
-                    sell_ref = next_sell_ref;
-                }
-
-                last_price = buy_ref.key.get_price();
+            if !can_match {
+                break;
             }
+
+            // Determine execution price (maker's price)
+            let execution_price = match (buy_data.order_type(), sell_data.order_type()) {
+                (OrderType::Market, _) => sell_data.limit_price,
+                (_, OrderType::Market) => buy_data.limit_price,
+                _ => {
+                    // Both limits - use maker's price (first in book)
+                    if buy_ref.key.to_timebased() < sell_ref.key.to_timebased() {
+                        buy_data.limit_price
+                    } else {
+                        sell_data.limit_price
+                    }
+                }
+            };
+
+            // Calculate maximum executable quantity
+            // Limited by: buyer's funds, seller's shares, buyer's target
+            let max_qty_by_funds = if execution_price > 0.0 {
+                (buy_data.funds_remaining / execution_price).floor() as u64
+            } else {
+                u64::MAX
+            };
+
+            let quantity = max_qty_by_funds
+                .min(sell_data.remaining_quantity)
+                .min(buy_data.target_quantity - buy_data.filled_quantity);
+
+            if quantity == 0 {
+                // Can't execute - buyer out of funds or target reached
+                drop(buy_ref);
+                drop(sell_ref);
+                break;
+            }
+
+            let trade_value = quantity as f32 * execution_price;
+
+            // Update buy order
+            if let Some(crate::protos::order::SideData::Buy(ref mut buy_mut)) =
+                buy_ref.order.side_data
+            {
+                buy_mut.funds_remaining -= trade_value;
+                buy_mut.filled_quantity += quantity;
+
+                // Check if buy order is complete
+                if buy_mut.filled_quantity >= buy_mut.target_quantity
+                    || buy_mut.funds_remaining < 0.01
+                {
+                    buy_ref.order.set_status(OrderStatus::Filled);
+                } else {
+                    buy_ref.order.set_status(OrderStatus::PartiallyFilled);
+                }
+            }
+
+            // Update sell order
+            if let Some(crate::protos::order::SideData::Sell(ref mut sell_mut)) =
+                sell_ref.order.side_data
+            {
+                sell_mut.remaining_quantity -= quantity;
+                sell_mut.total_proceeds += trade_value;
+
+                // Check if sell order is complete
+                if sell_mut.remaining_quantity == 0 {
+                    sell_ref.order.set_status(OrderStatus::Filled);
+                } else {
+                    sell_ref.order.set_status(OrderStatus::PartiallyFilled);
+                }
+            }
+
+            last_price = execution_price;
         }
 
         self.order_book.last_price = last_price;
@@ -147,11 +247,6 @@ impl<'a, 'ob, P> OrderRef<'a, 'ob, P> {
 impl<'a, 'ob, P> Drop for OrderRef<'a, 'ob, P> {
     fn drop(&mut self) {
         let transaction = self.dormant_tx.reborrow();
-        if self.order.remaining == 0 {
-            self.order.set_status(OrderStatus::Filled);
-        } else if self.order.remaining != self.order.quantity {
-            self.order.set_status(OrderStatus::PartiallyFilled);
-        }
         transaction.updates.push(self.order);
     }
 }

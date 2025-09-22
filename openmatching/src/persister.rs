@@ -7,13 +7,13 @@ use std::{
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::protos::{Order, OrderStatus, TimebasedKey};
+use crate::protos::{Order, OrderStatus, Side, TimebasedKey};
 
 pub trait Persister: Send + Sync + 'static {
     type Error: Error + Debug + Send + Sync + 'static;
 
     fn upsert_order(&self, orders: Vec<Order>) -> Result<(), Self::Error>;
-    fn get_order(&self, key: TimebasedKey) -> Result<Option<Order>, Self::Error>;
+    fn get_order(&self, side: Side, key: TimebasedKey) -> Result<Option<Order>, Self::Error>;
     fn get_all_buy_orders(&self) -> Result<Vec<Order>, Self::Error>;
     fn get_all_sell_orders(&self) -> Result<Vec<Order>, Self::Error>;
 }
@@ -27,6 +27,7 @@ pub trait AsyncPersister {
     ) -> impl Future<Output = Result<(), Self::Error>> + 'static;
     fn get_order(
         &self,
+        side: Side,
         key: TimebasedKey,
     ) -> impl Future<Output = Result<Option<Order>, Self::Error>> + 'static;
     fn get_all_buy_orders(&self)
@@ -43,6 +44,7 @@ enum Command<T: Persister + 'static> {
     },
     Get {
         reply: oneshot::Sender<Result<Option<Order>, T::Error>>,
+        side: Side,
         key: TimebasedKey,
     },
     GetAllBuyOrders {
@@ -97,8 +99,8 @@ impl<T: Persister + Send + Sync + 'static> Asyncify<T> {
                         count += len;
                         total_count += len;
                     }
-                    Command::Get { reply, key } => {
-                        let res = persister.get_order(key);
+                    Command::Get { reply, side, key } => {
+                        let res = persister.get_order(side, key);
                         if reply.send(res).is_err() {
                             tracing::warn!("failed to send get order reply");
                         }
@@ -169,12 +171,13 @@ impl<T: Persister + 'static> AsyncPersister for Asyncify<T> {
 
     fn get_order(
         &self,
+        side: Side,
         key: TimebasedKey,
     ) -> impl Future<Output = Result<Option<Order>, Self::Error>> + 'static {
         let tx = self.inner.tx.clone();
         async move {
             let (reply, rx) = oneshot::channel();
-            tx.send(Command::Get { reply, key })
+            tx.send(Command::Get { reply, side, key })
                 .await
                 .map_err(|_| Self::Error::ChannelClosed)?;
             rx.await

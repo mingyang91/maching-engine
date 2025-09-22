@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM buy_orders WHERE key = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "order_type",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 3,
+        "name": "limit_price",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 4,
+        "name": "total_funds",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 5,
+        "name": "funds_remaining",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 6,
+        "name": "target_quantity",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "filled_quantity",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "d8d310053cab2c5c3de851bcff21ccc8a447c3cc53d1112621296f034e3732ac"
+}
