@@ -39,10 +39,9 @@ impl PostgresPersister {
                             pending_orders.extend(orders);
 
                             // Flush if batch is large enough
-                            if pending_orders.len() >= 1000 {
-                                if let Err(e) = Self::upsert_impl(pool.clone(), std::mem::take(&mut pending_orders)).await {
-                                    tracing::error!("failed to upsert orders: {e:?}");
-                                }
+                            if pending_orders.len() < 1000 { continue; }
+                            if let Err(e) = Self::upsert_impl(pool.clone(), std::mem::take(&mut pending_orders)).await {
+                                tracing::error!("failed to upsert orders: {e:?}");
                             }
                         }
                         PersisteCommand::Abort => break,
@@ -50,10 +49,9 @@ impl PostgresPersister {
                 }
                 _ = flush_interval.tick() => {
                     // Periodic flush for low-volume periods
-                    if !pending_orders.is_empty() {
-                        if let Err(e) = Self::upsert_impl(pool.clone(), std::mem::take(&mut pending_orders)).await {
-                            tracing::error!("failed to upsert orders: {e:?}");
-                        }
+                    if pending_orders.is_empty() { continue; }
+                    if let Err(e) = Self::upsert_impl(pool.clone(), std::mem::take(&mut pending_orders)).await {
+                        tracing::error!("failed to upsert orders: {e:?}");
                     }
                 }
             }
