@@ -8,7 +8,7 @@ use quickcheck::{Arbitrary, Gen};
 
 use crate::protos::proto_order::SideData;
 
-include!(concat!(env!("OUT_DIR"), "/matching_engine.protos.rs"));
+include!(concat!(env!("OUT_DIR"), "/openmatching.protos.rs"));
 
 impl PartialOrd for Key {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {

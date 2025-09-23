@@ -1,7 +1,7 @@
 syntax = "proto3";
 import "key.proto";
 
-package matching_engine.protos;
+package openmatching.protos;
 
 // Clean separation: Buy and Sell orders have different data
 message ProtoOrder {

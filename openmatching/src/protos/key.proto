@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package matching_engine.protos;
+package openmatching.protos;
 
 message Key {
     uint64 high = 1;

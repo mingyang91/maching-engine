@@ -3,7 +3,7 @@ import "order.proto";
 import "key.proto";
 import "google/protobuf/timestamp.proto";
 
-package matching_engine.protos;
+package openmatching.protos;
 
 message Log {
     uint64 sequence = 1;

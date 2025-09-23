@@ -927,7 +927,7 @@ mod tests {
                 let _ = service1
                     .transfer(Uuid::new_v4(), &alice1, &bob1, &usd1, &amount, None)
                     .await;
-                println!("Transfer {} from Alice to Bob completed", i);
+                println!("Transfer {i} from Alice to Bob completed");
             }
         });
 
@@ -937,7 +937,7 @@ mod tests {
                 let _ = service2
                     .transfer(Uuid::new_v4(), &bob2, &alice2, &usd2, &amount, None)
                     .await;
-                println!("Transfer {} from Bob to Alice completed", i);
+                println!("Transfer {i} from Bob to Alice completed");
             }
         });
 
