@@ -1,6 +1,5 @@
 mod key;
 
-use core::time;
 use std::{cmp::Ordering, error::Error, marker::PhantomData};
 
 pub use key::*;
