@@ -3,7 +3,7 @@ use super::*;
 use crate::{
     borrow::DormantMutRef,
     persister::AsyncPersister,
-    protos::{Order, OrderStatus, OrderType, PricebasedKey, TimebasedKey, order::SideData},
+    protos::{Order, OrderStatus, OrderType, PricebasedKey, TimebasedKey, proto_order::SideData},
 };
 
 pub struct Transaction<'ob, P> {
@@ -19,34 +19,15 @@ impl<'ob, P> Transaction<'ob, P> {
         }
     }
 
-    pub(super) fn add_order(&mut self, mut order: Order) {
-        // Determine price for BTreeMap sorting based on order type
-        let price_for_key = match &order.side_data.expect("Order must be either buy or sell") {
-            SideData::Buy(buy) => {
-                match buy.order_type() {
-                    OrderType::Market => f32::INFINITY, // Market buy at any price
-                    OrderType::Limit => buy.limit_price,
-                }
-            }
-            SideData::Sell(sell) => {
-                match sell.order_type() {
-                    OrderType::Market => 0.0, // Market sell at any price
-                    OrderType::Limit => sell.limit_price,
-                }
-            }
-        };
-
-        // Create key with price for sorting
-        let key = TimebasedKey::new(price_for_key);
-        order.key = Some(key.into());
-
+    pub(super) fn add_order(&mut self, order: Order) {
+        let key: TimebasedKey = order.key().into();
         // Add to appropriate side of order book
-        match &order.side_data.expect("Order must be either buy or sell") {
+        match &order.side_data() {
             SideData::Buy(_) => {
-                self.order_book.buys.insert(key.to_pricebased(), order);
+                self.order_book.buys.insert(key.into(), order);
             }
             SideData::Sell(_) => {
-                self.order_book.sells.insert(key.to_pricebased(), order);
+                self.order_book.sells.insert(key.into(), order);
             }
         }
         self.updates.push(order);
@@ -129,18 +110,10 @@ impl<'ob, P> Transaction<'ob, P> {
             };
 
             // Extract buy and sell data
-            let SideData::Buy(buy_data) = &buy_ref
-                .order
-                .side_data
-                .expect("Buy side should have buy data")
-            else {
+            let SideData::Buy(buy_data) = &buy_ref.order.side_data() else {
                 unreachable!("Buy side should have buy data");
             };
-            let SideData::Sell(sell_data) = &sell_ref
-                .order
-                .side_data
-                .expect("Sell side should have sell data")
-            else {
+            let SideData::Sell(sell_data) = &sell_ref.order.side_data() else {
                 unreachable!("Sell side should have sell data");
             };
 
@@ -194,9 +167,7 @@ impl<'ob, P> Transaction<'ob, P> {
             let trade_value = quantity as f32 * execution_price;
 
             // Update buy order
-            if let Some(crate::protos::order::SideData::Buy(ref mut buy_mut)) =
-                buy_ref.order.side_data
-            {
+            if let SideData::Buy(ref mut buy_mut) = buy_ref.order.side_data() {
                 buy_mut.funds_remaining -= trade_value;
                 buy_mut.filled_quantity += quantity;
 
@@ -211,9 +182,7 @@ impl<'ob, P> Transaction<'ob, P> {
             }
 
             // Update sell order
-            if let Some(crate::protos::order::SideData::Sell(ref mut sell_mut)) =
-                sell_ref.order.side_data
-            {
+            if let SideData::Sell(ref mut sell_mut) = sell_ref.order.side_data() {
                 sell_mut.remaining_quantity -= quantity;
                 sell_mut.total_proceeds += trade_value;
 

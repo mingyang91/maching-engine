@@ -4,7 +4,7 @@ import "key.proto";
 package matching_engine.protos;
 
 // Clean separation: Buy and Sell orders have different data
-message Order {
+message ProtoOrder {
     Key key = 1;                   // Order ID/timestamp
     OrderStatus status = 2;
     
@@ -50,7 +50,7 @@ enum OrderStatus {
 }
 
 message Execution {
-    Order buyer = 1;
-    Order seller = 2;
+    ProtoOrder buyer = 1;
+    ProtoOrder seller = 2;
     uint64 quantity = 3;
 }

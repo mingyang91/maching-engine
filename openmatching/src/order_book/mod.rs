@@ -74,7 +74,7 @@ where
         let now = Instant::now();
         let buys = self.persister.get_all_buy_orders().await?;
         for order in buys {
-            let key: TimebasedKey = order.key.expect("key should be present").into();
+            let key: TimebasedKey = order.key().into();
             self.buys.insert(key.to_pricebased(), order);
         }
         tracing::info!("load {} buys in {:?}", self.buys.len(), now.elapsed());
@@ -82,7 +82,7 @@ where
         let now = Instant::now();
         let sells = self.persister.get_all_sell_orders().await?;
         for order in sells {
-            let key: TimebasedKey = order.key.expect("key should be present").into();
+            let key: TimebasedKey = order.key().into();
             self.sells.insert(key.to_pricebased(), order);
         }
         tracing::info!("load {} sells in {:?}", self.sells.len(), now.elapsed());

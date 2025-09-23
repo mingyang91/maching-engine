@@ -2,7 +2,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use openmatching::{
     persister::AsyncPersister,
-    protos::{BuyOrder, Order, SellOrder, Side, TimebasedKey, order},
+    protos::{
+        BuyOrder, Order, ProtoOrder, SellOrder, Side, TimebasedKey, Unchecked,
+        proto_order::SideData,
+    },
 };
 use sqlx::{Pool, Postgres};
 use tokio::sync::mpsc;
@@ -85,13 +88,13 @@ impl PostgresPersister {
         let mut total_proceeds = Vec::new();
 
         for o in orders.values() {
-            let key: TimebasedKey = o.key.expect("key should be present").into();
+            let key: TimebasedKey = o.key().into();
             let key_uuid = uuid::Uuid::from_bytes(key.to_bytes());
             keys.push(key_uuid);
             statuses.push(o.status() as i16);
 
-            match &o.side_data {
-                Some(order::SideData::Buy(buy)) => {
+            match &o.side_data() {
+                SideData::Buy(buy) => {
                     sides.push(0i16); // BUY
                     order_types.push(buy.order_type() as i16);
                     limit_prices.push(buy.limit_price);
@@ -107,7 +110,7 @@ impl PostgresPersister {
                     remaining_quantities.push(None);
                     total_proceeds.push(None);
                 }
-                Some(order::SideData::Sell(sell)) => {
+                SideData::Sell(sell) => {
                     sides.push(1i16); // SELL
                     order_types.push(sell.order_type() as i16);
                     limit_prices.push(sell.limit_price);
@@ -123,7 +126,6 @@ impl PostgresPersister {
                     remaining_quantities.push(Some(sell.remaining_quantity as i64));
                     total_proceeds.push(Some(sell.total_proceeds));
                 }
-                None => panic!("Order must have side_data"),
             }
         }
 
@@ -198,7 +200,7 @@ impl AsyncPersister for PostgresPersister {
     ) -> impl Future<Output = Result<(), Self::Error>> + 'static {
         let mut btree = BTreeMap::new();
         for order in orders {
-            let key: TimebasedKey = order.key.expect("key should be present").into();
+            let key: TimebasedKey = order.key().into();
             btree.insert(key, order);
         }
         let cmd_tx = self.inner.cmd_tx.clone();
@@ -233,30 +235,33 @@ impl AsyncPersister for PostgresPersister {
             // Reconstruct order based on side
             let side_data = if res.side == 0 {
                 // BUY
-                Some(order::SideData::Buy(BuyOrder {
+                SideData::Buy(BuyOrder {
                     order_type: res.order_type as i32,
                     limit_price: res.limit_price,
                     total_funds: res.total_funds.unwrap_or(0.0),
                     funds_remaining: res.funds_remaining.unwrap_or(0.0),
                     target_quantity: res.target_quantity.unwrap_or(0) as u64,
                     filled_quantity: res.filled_quantity.unwrap_or(0) as u64,
-                }))
+                })
             } else {
                 // SELL
-                Some(order::SideData::Sell(SellOrder {
+                SideData::Sell(SellOrder {
                     order_type: res.order_type as i32,
                     limit_price: res.limit_price,
                     total_quantity: res.total_quantity.unwrap_or(0) as u64,
                     remaining_quantity: res.remaining_quantity.unwrap_or(0) as u64,
                     total_proceeds: res.total_proceeds.unwrap_or(0.0),
-                }))
+                })
             };
 
-            Ok(Some(Order {
+            let proto_order: Order<Unchecked> = ProtoOrder {
                 key: Some(key.into()),
                 status: res.status as i32,
-                side_data,
-            }))
+                side_data: Some(side_data),
+            }
+            .into();
+
+            Ok(Some(proto_order.assume_checked()))
         }
     }
 
@@ -280,10 +285,10 @@ impl AsyncPersister for PostgresPersister {
                 .into_iter()
                 .map(|r| {
                     let key: TimebasedKey = TimebasedKey::from_bytes(r.key.into_bytes());
-                    Order {
+                    let proto_order: Order<Unchecked> = ProtoOrder {
                         key: Some(key.into()),
                         status: r.status as i32,
-                        side_data: Some(order::SideData::Buy(BuyOrder {
+                        side_data: Some(SideData::Buy(BuyOrder {
                             order_type: r.order_type as i32,
                             limit_price: r.limit_price,
                             total_funds: r.total_funds.unwrap_or(0.0),
@@ -292,6 +297,8 @@ impl AsyncPersister for PostgresPersister {
                             filled_quantity: r.filled_quantity.unwrap_or(0) as u64,
                         })),
                     }
+                    .into();
+                    proto_order.assume_checked()
                 })
                 .collect())
         }
@@ -317,10 +324,10 @@ impl AsyncPersister for PostgresPersister {
                 .into_iter()
                 .map(|r| {
                     let key: TimebasedKey = TimebasedKey::from_bytes(r.key.into_bytes());
-                    Order {
+                    let proto_order: Order<Unchecked> = ProtoOrder {
                         key: Some(key.into()),
                         status: r.status as i32,
-                        side_data: Some(order::SideData::Sell(SellOrder {
+                        side_data: Some(SideData::Sell(SellOrder {
                             order_type: r.order_type as i32,
                             limit_price: r.limit_price,
                             total_quantity: r.total_quantity.unwrap_or(0) as u64,
@@ -328,6 +335,8 @@ impl AsyncPersister for PostgresPersister {
                             total_proceeds: r.total_proceeds.unwrap_or(0.0),
                         })),
                     }
+                    .into();
+                    proto_order.assume_checked()
                 })
                 .collect())
         }

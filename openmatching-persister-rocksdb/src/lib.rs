@@ -4,7 +4,6 @@ use openmatching::{
     persister::{Asyncify, Persister},
     protos::{Order, OrderStatus, Side, TimebasedKey},
 };
-use prost::Message;
 use rocksdb::{DB, IteratorMode, Options, WriteBatch};
 
 #[derive(thiserror::Error, Debug)]
@@ -94,7 +93,7 @@ impl Persister for RocksdbPersister {
         let buys_cf = self.buys_cf();
         let sells_cf = self.sells_cf();
         for order in orders {
-            let key: TimebasedKey = order.key.expect("key should be present").into();
+            let key: TimebasedKey = order.key().into();
             write_batch.put_cf(
                 &all_orders_cf,
                 key.to_pricebased().to_bytes(),
@@ -126,7 +125,7 @@ impl Persister for RocksdbPersister {
             return Ok(None);
         };
 
-        let order = openmatching::protos::Order::decode(value.as_slice())?;
+        let order = openmatching::protos::Order::decode(value.as_slice())?.assume_checked();
         Ok(Some(order))
     }
 
@@ -136,7 +135,7 @@ impl Persister for RocksdbPersister {
         let mut orders = Vec::new();
         for result in iter {
             let (_, value) = result?;
-            orders.push(openmatching::protos::Order::decode(&value[..])?);
+            orders.push(openmatching::protos::Order::decode(&value[..])?.assume_checked());
         }
         Ok(orders)
     }
@@ -147,7 +146,7 @@ impl Persister for RocksdbPersister {
         let mut orders = Vec::new();
         for result in iter {
             let (_, value) = result?;
-            orders.push(openmatching::protos::Order::decode(&value[..])?);
+            orders.push(openmatching::protos::Order::decode(&value[..])?.assume_checked());
         }
         Ok(orders)
     }

@@ -1,10 +1,13 @@
 mod key;
 
-use std::{cmp::Ordering, error::Error};
+use core::time;
+use std::{cmp::Ordering, error::Error, marker::PhantomData};
 
 pub use key::*;
 use prost::Message;
 use quickcheck::{Arbitrary, Gen};
+
+use crate::protos::proto_order::SideData;
 
 include!(concat!(env!("OUT_DIR"), "/matching_engine.protos.rs"));
 
@@ -129,14 +132,121 @@ impl Arbitrary for Key {
     }
 }
 
+pub trait Validation: Sync + Send + Sized + Unpin {
+    const IS_CHECKED: bool;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Unchecked {}
+
+impl Validation for Unchecked {
+    const IS_CHECKED: bool = false;
+}
+
+impl Validation for Checked {
+    const IS_CHECKED: bool = true;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Checked {}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Order<V: Validation = Checked>(ProtoOrder, PhantomData<V>);
+
+impl Order<Unchecked> {
+    pub fn validate(self) -> Result<Order<Checked>, String> {
+        let Some(key) = self.0.key else {
+            return Err("key is none".to_string());
+        };
+
+        let Some(side_data) = self.0.side_data else {
+            return Err("side_data is none".to_string());
+        };
+
+        let timebased_key = TimebasedKey::from(key);
+        let price = timebased_key.get_price();
+
+        if !(price.is_finite() && price.is_sign_positive()) {
+            return Err("key price is negative, infinite or NaN".to_string());
+        }
+
+        match side_data {
+            SideData::Buy(buy_order) => match buy_order.order_type() {
+                OrderType::Market => {
+                    if timebased_key.get_price() != f32::MAX {
+                        return Err("market buy order must have max price".to_string());
+                    }
+                }
+                OrderType::Limit => {
+                    if price != buy_order.limit_price {
+                        return Err("limit buy order must have same price as key".to_string());
+                    }
+                }
+            },
+            SideData::Sell(sell_order) => match sell_order.order_type() {
+                OrderType::Market => {
+                    if timebased_key.get_price() != 0.0 {
+                        return Err("market sell order must have 0 price".to_string());
+                    }
+                }
+                OrderType::Limit => {
+                    if price != sell_order.limit_price {
+                        return Err("limit sell order must have same price as key".to_string());
+                    }
+                }
+            },
+        }
+
+        Ok(Order(self.0, PhantomData::<Checked>))
+    }
+
+    pub fn assume_checked(self) -> Order<Checked> {
+        Order(self.0, PhantomData::<Checked>)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, prost::DecodeError> {
+        ProtoOrder::decode(bytes).map(|order| Order(order, PhantomData::<Unchecked>))
+    }
+}
+
+impl From<ProtoOrder> for Order<Unchecked> {
+    fn from(value: ProtoOrder) -> Self {
+        Order(value, PhantomData::<Unchecked>)
+    }
+}
+
+impl TryFrom<ProtoOrder> for Order<Checked> {
+    type Error = String;
+    fn try_from(value: ProtoOrder) -> Result<Self, Self::Error> {
+        let unchecked = Order(value, PhantomData::<Unchecked>);
+        unchecked.validate()
+    }
+}
+
 // Helper methods for Order to extract common fields
-impl Order {
+impl Order<Checked> {
+    pub fn key(&self) -> Key {
+        self.0.key.expect("key should be present")
+    }
+
+    pub fn status(&self) -> OrderStatus {
+        self.0.status()
+    }
+
+    pub fn set_status(&mut self, status: OrderStatus) {
+        self.0.set_status(status);
+    }
+
+    pub fn side_data(&self) -> proto_order::SideData {
+        self.0.side_data.expect("side_data should be present")
+    }
+
     pub fn is_buy(&self) -> bool {
-        matches!(self.side_data, Some(order::SideData::Buy(_)))
+        matches!(self.0.side_data, Some(proto_order::SideData::Buy(_)))
     }
 
     pub fn is_sell(&self) -> bool {
-        matches!(self.side_data, Some(order::SideData::Sell(_)))
+        matches!(self.0.side_data, Some(proto_order::SideData::Sell(_)))
     }
 
     pub fn side(&self) -> Side {
@@ -144,37 +254,41 @@ impl Order {
     }
 
     pub fn order_type(&self) -> OrderType {
-        match &self.side_data {
-            Some(order::SideData::Buy(b)) => b.order_type(),
-            Some(order::SideData::Sell(s)) => s.order_type(),
-            None => OrderType::Limit, // default
+        match &self.0.side_data {
+            Some(proto_order::SideData::Buy(b)) => b.order_type(),
+            Some(proto_order::SideData::Sell(s)) => s.order_type(),
+            None => unreachable!("Order must have side_data"),
         }
     }
 
     pub fn price(&self) -> f32 {
-        match &self.side_data {
-            Some(order::SideData::Buy(b)) => b.limit_price,
-            Some(order::SideData::Sell(s)) => s.limit_price,
-            None => 0.0,
+        match &self.0.side_data {
+            Some(proto_order::SideData::Buy(b)) => b.limit_price,
+            Some(proto_order::SideData::Sell(s)) => s.limit_price,
+            None => unreachable!("Order must have side_data"),
         }
     }
 
     // For compatibility - returns quantity/target based on side
     pub fn quantity(&self) -> u64 {
-        match &self.side_data {
-            Some(order::SideData::Buy(b)) => b.target_quantity,
-            Some(order::SideData::Sell(s)) => s.total_quantity,
-            None => 0,
+        match &self.0.side_data {
+            Some(proto_order::SideData::Buy(b)) => b.target_quantity,
+            Some(proto_order::SideData::Sell(s)) => s.total_quantity,
+            None => unreachable!("Order must have side_data"),
         }
     }
 
     // For compatibility - returns remaining based on side
     pub fn remaining(&self) -> u64 {
-        match &self.side_data {
-            Some(order::SideData::Buy(b)) => b.target_quantity - b.filled_quantity,
-            Some(order::SideData::Sell(s)) => s.remaining_quantity,
-            None => 0,
+        match &self.0.side_data {
+            Some(proto_order::SideData::Buy(b)) => b.target_quantity - b.filled_quantity,
+            Some(proto_order::SideData::Sell(s)) => s.remaining_quantity,
+            None => unreachable!("Order must have side_data"),
         }
+    }
+
+    pub fn encode_to_vec(&self) -> Vec<u8> {
+        self.0.encode_to_vec()
     }
 }
 
@@ -201,7 +315,7 @@ impl Arbitrary for Order {
                 target_quantity as f32 * limit_price
             };
 
-            Some(order::SideData::Buy(BuyOrder {
+            Some(proto_order::SideData::Buy(BuyOrder {
                 order_type: order_type.into(),
                 limit_price,
                 total_funds,
@@ -219,7 +333,7 @@ impl Arbitrary for Order {
                 OrderType::Market => 0.0,
             };
 
-            Some(order::SideData::Sell(SellOrder {
+            Some(proto_order::SideData::Sell(SellOrder {
                 order_type: order_type.into(),
                 limit_price,
                 total_quantity,
@@ -228,11 +342,14 @@ impl Arbitrary for Order {
             }))
         };
 
-        Order {
-            key: Some(Key::arbitrary(g)),
-            status: OrderStatus::Open.into(),
-            side_data,
-        }
+        Order(
+            ProtoOrder {
+                key: Some(Key::arbitrary(g)),
+                status: OrderStatus::Open.into(),
+                side_data,
+            },
+            PhantomData::<Checked>,
+        )
     }
 }
 

@@ -14,7 +14,7 @@ message Log {
     }
 
     message AddOrder {
-        Order order = 1;
+        ProtoOrder order = 1;
     }
 
     message CancelOrder {
